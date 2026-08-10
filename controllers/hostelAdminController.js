@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const axios = require('axios'); // Added to resolve short maps URLs via redirects
 const Hostel = require('../models/Hostel');
 const Booking = require('../models/Booking');
 const Review = require('../models/Review');
@@ -27,13 +28,40 @@ const resolveHostelByIdentifier = async (identifier) => {
   });
 };
 
-const extractCoordinatesFromGoogleMaps = (link) => {
+/**
+ * Enhanced function to extract coordinates from long URLs or resolve shortened Google Maps links
+ */
+const extractCoordinatesFromGoogleMaps = async (link) => {
   if (!link) return [0, 0];
-  const match = link.match(/q=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/i) || link.match(/@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/i);
+  
+  let targetUrl = link.trim();
+
+  // If it's a shortened Google Maps link, follow the redirects to get the long target URL
+  if (targetUrl.includes('maps.app.goo.gl') || targetUrl.includes('goo.gl/maps')) {
+    try {
+      const response = await axios.get(targetUrl, {
+        maxRedirects: 5,
+        validateStatus: (status) => status >= 200 && status < 400,
+        timeout: 5000
+      });
+      targetUrl = response.request.res.responseUrl || targetUrl;
+    } catch (error) {
+      logger.error('Failed to resolve shortened Google Maps link:', error.message);
+    }
+  }
+
+  // Regex matching standard coordinate patterns in Google Maps URLs
+  const match = targetUrl.match(/q=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/i) || 
+                targetUrl.match(/@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/i) ||
+                targetUrl.match(/ll=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/i);
+
   if (match) {
     const lat = Number(match[1]);
     const lng = Number(match[2]);
-    if (!Number.isNaN(lat) && !Number.isNaN(lng)) return [lng, lat];
+    if (!Number.isNaN(lat) && !Number.isNaN(lng)) {
+      // GeoJSON standard format: [longitude, latitude]
+      return [lng, lat];
+    }
   }
   return [0, 0];
 };
@@ -125,32 +153,10 @@ const enrichHostelWithMetrics = async (hostel) => {
   };
 };
 
-const findSimilarHostels = async (payload) => {
-  const name = String(payload.name || '').trim().toLowerCase();
-  const phone = String(payload.phone || '').trim();
-  const address = String(payload.location?.addressText || payload.addressText || '').trim().toLowerCase();
-  const query = [];
-
-  if (name) {
-    query.push({ name: { $regex: name.replace(/\s+/g, '.*'), $options: 'i' } });
-  }
-  if (phone) {
-    query.push({ phone });
-  }
-  if (address) {
-    query.push({ 'location.addressText': { $regex: address.replace(/\s+/g, '.*'), $options: 'i' } });
-  }
-
-  if (!query.length) return [];
-  const hostels = await Hostel.find({ $or: query }).limit(5).select('name phone location addressText');
-  return hostels;
-};
-
 const uploadHostelImages = async (req, res) => {
   try {
     const { uploadMultipleFiles } = require('../config/cloudinary');
     
-    // Allow empty image uploads
     if (!req.files || !req.files.length) {
       return res.status(200).json({ success: true, images: [], message: 'No images uploaded' });
     }
@@ -192,7 +198,7 @@ exports.createHostel = async (req, res) => {
 
     const normalizedType = normalizeHostelType(payload.type);
     if (!normalizedType) {
-      return res.status(400).json({ success: false, message: 'Type must be one of BOYS, GIRLS or PG' });
+      return res.status(400).json({ success: false, message: 'Type must be one of boys, girls or pg' });
     }
 
     const ownerId = payload.ownerId || payload.owner || payload.ownerEmail || null;
@@ -224,9 +230,12 @@ exports.createHostel = async (req, res) => {
     }
 
     const location = payload.location || {};
-    const coordinates = Array.isArray(location.coordinates?.coordinates)
+    const mapLink = location.googleMapLink || payload.googleMapLink || '';
+    
+    // Await the asynchronous short-link extraction
+    const coordinates = Array.isArray(location.coordinates?.coordinates) && location.coordinates.coordinates.length === 2
       ? location.coordinates.coordinates.map(Number)
-      : extractCoordinatesFromGoogleMaps(location.googleMapLink || payload.googleMapLink || '');
+      : await extractCoordinatesFromGoogleMaps(mapLink);
 
     const normalizedRoomTypes = Array.isArray(payload.roomTypes) ? payload.roomTypes.map(item => ({
       roomType: item.roomType || item.name || 'Room',
@@ -253,7 +262,7 @@ exports.createHostel = async (req, res) => {
       description: payload.description,
       location: {
         addressText: location.addressText || payload.addressText || 'Address not provided',
-        googleMapLink: location.googleMapLink || payload.googleMapLink || '',
+        googleMapLink: mapLink,
         coordinates: { type: 'Point', coordinates }
       },
       phone: payload.phone,
@@ -382,10 +391,25 @@ exports.updateHostel = async (req, res) => {
       if (req.body[field] !== undefined) {
         if (field === 'type') {
           const normalizedType = normalizeHostelType(req.body[field]);
-          if (!normalizedType) return res.status(400).json({ success: false, message: 'Type must be one of BOYS, GIRLS or PG' });
+          if (!normalizedType) return res.status(400).json({ success: false, message: 'Type must be one of boys, girls or pg' });
           hostel[field] = normalizedType;
         } else if (field === 'images') {
           hostel.images = buildImages({ images: req.body.images });
+        } else if (field === 'location') {
+          const incomingLoc = req.body.location || {};
+          hostel.location.addressText = incomingLoc.addressText || hostel.location.addressText;
+          const newMapLink = incomingLoc.googleMapLink;
+          
+          if (newMapLink && newMapLink !== hostel.location.googleMapLink) {
+            hostel.location.googleMapLink = newMapLink;
+            const resolvedCoords = await extractCoordinatesFromGoogleMaps(newMapLink);
+            if (resolvedCoords[0] !== 0 || resolvedCoords[1] !== 0) {
+              hostel.location.coordinates = {
+                type: 'Point',
+                coordinates: resolvedCoords
+              };
+            }
+          }
         } else {
           hostel[field] = req.body[field];
         }

@@ -9,7 +9,19 @@ const hostelSchema = new mongoose.Schema({
 
   location: {
     addressText: { type: String, required: true },
-    googleMapLink: { type: String }
+    googleMapLink: { type: String },
+    coordinates: {
+      type: {
+        type: String,
+        enum: ['Point'],
+        default: 'Point'
+      },
+      // GeoJSON standard format: [longitude, latitude]
+      coordinates: {
+        type: [Number],
+        default: [0, 0]
+      }
+    }
   },
 
   phone: { type: String, required: true },
@@ -76,6 +88,8 @@ const hostelSchema = new mongoose.Schema({
   collection: 'hostels'
 });
 
+// Indexes for query performance and geospatial searches
 hostelSchema.index({ name: 1, 'location.addressText': 1 });
+hostelSchema.index({ 'location.coordinates': '2dsphere' });
 
 module.exports = mongoose.model('Hostel', hostelSchema);
