@@ -6,16 +6,35 @@ const logger = require('../config/logger');
 
 exports.getLogs = async (req, res) => {
   try {
-    const { action, resourceType, page = 1, limit = 20 } = req.query;
+    const { action, resourceType, page = 1, limit = 20, all } = req.query;
+    const shouldReturnAll = String(all).toLowerCase() === 'true';
+
     let query = {};
     if (action) query.action = action;
     if (resourceType) query.resourceType = resourceType;
 
-    const skip = (Number(page) - 1) * Number(limit);
-    const logs = await Log.find(query).populate('user', 'firstName lastName email role').sort('-createdAt').skip(skip).limit(Number(limit));
+    const pageValue = Number(page) || 1;
+    const limitValue = shouldReturnAll ? 0 : (Number(limit) || 20);
+
+    let logQuery = Log.find(query).populate('user', 'firstName lastName email role').sort('-createdAt');
+
+    if (!shouldReturnAll) {
+      const skip = (pageValue - 1) * limitValue;
+      logQuery = logQuery.skip(skip).limit(limitValue);
+    }
+
+    const logs = await logQuery.exec();
     const total = await Log.countDocuments(query);
 
-    res.status(200).json({ success: true, count: logs.length, total, pages: Math.ceil(total / Number(limit)), currentPage: Number(page), logs });
+    res.status(200).json({
+      success: true,
+      count: logs.length,
+      total,
+      pages: shouldReturnAll ? 1 : Math.ceil(total / limitValue),
+      currentPage: shouldReturnAll ? 1 : pageValue,
+      all: shouldReturnAll,
+      logs
+    });
   } catch (error) {
     logger.error('Get logs error:', error);
     res.status(500).json({ success: false, message: 'Error fetching logs' });
