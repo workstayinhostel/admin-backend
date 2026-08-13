@@ -7,7 +7,7 @@ const User = require('../models/User');
 const { sendTemplateEmail } = require('../utils/emailService');
 const emailTemplates = require('../utils/emailTemplates');
 const logger = require('../config/logger');
-const { deleteFile } = require('../config/cloudinary');
+const { deleteFile, uploadMultipleFiles } = require('../config/supabase');
 const { normalizeHostelType, getHostelPermission, createAuditLog, isAdminRole } = require('../utils/adminHelpers');
 const { generateHostelCode } = require('../utils/hostelHelpers');
 
@@ -151,30 +151,14 @@ const buildImages = (payload) => {
   }).filter(Boolean);
 };
 
-const getCloudinaryPublicIdFromUrl = (url) => {
-  if (!url || typeof url !== 'string') return null;
-
-  try {
-    const cleaned = url.split('?')[0];
-    const match = cleaned.match(/\/upload\/(?:v\d+\/)?(.+?)(?:\.[a-zA-Z0-9]+)?$/i);
-    if (!match) return null;
-    return match[1];
-  } catch (error) {
-    return null;
-  }
-};
-
-const deleteCloudinaryImageByUrl = async (imageUrl) => {
+const deleteSupabaseImageByUrl = async (imageUrl) => {
   if (!imageUrl) return false;
 
-  const publicId = getCloudinaryPublicIdFromUrl(imageUrl);
-  if (!publicId) return false;
-
   try {
-    await deleteFile(publicId);
+    await deleteFile(imageUrl);
     return true;
   } catch (error) {
-    logger.warn(`Unable to delete Cloudinary image ${imageUrl}: ${error.message}`);
+    logger.warn(`Unable to delete Supabase image ${imageUrl}: ${error.message}`);
     return false;
   }
 };
@@ -239,17 +223,15 @@ const findDuplicateHostel = async (payload) => {
   return possibleMatches.find((hostel) => {
     const hostelName = normalizeText(hostel?.name);
     const hostelAddress = normalizeText(hostel?.location?.addressText);
-    const hostelMapLink = normalizeMapLink(hostel?.location?.googleMapLink);
     const hostelPhone = normalizePhone(hostel?.phone || hostel?.whatsappNumber);
-    const hostelEmail = normalizeText(hostel?.email);
 
     const matchesName = currentName && hostelName && hostelName === currentName;
     const matchesAddress = currentAddress && hostelAddress && hostelAddress === currentAddress;
-    const matchesMapLink = currentMapLink && hostelMapLink && hostelMapLink === currentMapLink;
     const matchesPhone = currentPhone && hostelPhone && hostelPhone === currentPhone;
-    const matchesEmail = currentEmail && hostelEmail && hostelEmail === currentEmail;
 
-    return matchesName || matchesAddress || matchesMapLink || matchesPhone || matchesEmail;
+    // Only consider as duplicate if: (name AND phone) OR (name AND address) OR (address AND phone)
+    const isDuplicate = (matchesName && matchesPhone) || (matchesName && matchesAddress) || (matchesAddress && matchesPhone);
+    return isDuplicate;
   }) || null;
 };
 
@@ -282,13 +264,27 @@ const enrichHostelWithMetrics = async (hostel) => {
 
 const uploadHostelImages = async (req, res) => {
   try {
-    const { uploadMultipleFiles } = require('../config/cloudinary');
-    
     if (!req.files || !req.files.length) {
       return res.status(200).json({ success: true, images: [], message: 'No images uploaded' });
     }
 
-    const uploaded = await uploadMultipleFiles(req.files.map(file => ({ buffer: file.buffer, originalname: file.originalname })), 'hostels');
+    // Prevent duplicate uploads by removing files with duplicate buffer content
+    const uniqueFiles = [];
+    const processedBuffers = new Set();
+    
+    for (const file of req.files) {
+      const bufferHash = file.buffer.toString('base64').substring(0, 50); // Use first 50 chars as hash
+      if (!processedBuffers.has(bufferHash)) {
+        uniqueFiles.push(file);
+        processedBuffers.add(bufferHash);
+      }
+    }
+
+    if (!uniqueFiles.length) {
+      return res.status(200).json({ success: true, images: [], message: 'No unique images to upload' });
+    }
+
+    const uploaded = await uploadMultipleFiles(uniqueFiles.map(file => ({ buffer: file.buffer, originalname: file.originalname })), 'hostels');
     const imageUrls = uploaded.map(result => result.secure_url || result.url || '');
 
     res.status(200).json({ success: true, images: imageUrls.filter(Boolean), message: 'Images uploaded successfully' });
@@ -304,10 +300,12 @@ exports.createHostel = async (req, res) => {
     const actor = req.user;
     const payload = req.body;
 
+    // ===== STEP 1: Validate required fields =====
     if (!payload.name || !payload.type || !payload.description || !payload.location || !payload.phone) {
       return res.status(400).json({ success: false, message: 'name, type, description, location and phone are required' });
     }
 
+    // ===== STEP 2: CHECK FOR DUPLICATE HOSTEL FIRST (BEFORE ANY OTHER PROCESSING) =====
     const duplicateHostel = await findDuplicateHostel(payload);
     if (duplicateHostel && payload.confirmDuplicate !== true) {
       return res.status(409).json({
@@ -323,11 +321,13 @@ exports.createHostel = async (req, res) => {
       });
     }
 
+    // ===== STEP 3: Validate type =====
     const normalizedType = normalizeHostelType(payload.type);
     if (!normalizedType) {
       return res.status(400).json({ success: false, message: 'Type must be one of boys, girls or pg' });
     }
 
+    // ===== STEP 4: Validate and process owner =====
     const ownerId = payload.ownerId || payload.owner || payload.ownerEmail || null;
     let owner = null;
     if (ownerId) {
@@ -645,7 +645,7 @@ exports.updateHostel = async (req, res) => {
       const removedUrls = collectDeletedImageUrls(previousImages, cleanedImages, deletedExplicit);
 
       for (const imageUrl of removedUrls) {
-        await deleteCloudinaryImageByUrl(imageUrl);
+        await deleteSupabaseImageByUrl(imageUrl);
       }
 
       hostel.images = cleanedImages;
@@ -756,6 +756,19 @@ exports.deleteHostel = async (req, res) => {
     const hostel = await Hostel.findById(req.params.hostelId);
     if (!hostel) return res.status(404).json({ success: false, message: 'Hostel not found' });
     if (!['superadmin', 'founder'].includes(req.user.role)) return res.status(403).json({ success: false, message: 'Only superadmins and founders can delete hostels' });
+
+    // Delete all associated images from Supabase Storage
+    if (Array.isArray(hostel.images) && hostel.images.length > 0) {
+      for (const image of hostel.images) {
+        try {
+          if (image?.url) {
+            await deleteSupabaseImageByUrl(image.url);
+          }
+        } catch (error) {
+          logger.warn(`Failed to delete image ${image?.url} for hostel ${hostel.name}:`, error.message);
+        }
+      }
+    }
 
     await hostel.deleteOne();
     await createAuditLog({

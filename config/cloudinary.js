@@ -1,4 +1,4 @@
-let cloudinary;
+ let cloudinary;
 const logger = require('./logger');
 
 try {
@@ -132,4 +132,4 @@ module.exports = {
   uploadMultipleFiles,
   deleteFile,
   optimizeImageUrl
-};
+}; 
