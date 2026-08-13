@@ -3,18 +3,16 @@ const Hostel = require('../models/Hostel');
 const Booking = require('../models/Booking');
 const Log = require('../models/Log');
 const logger = require('../config/logger');
+const { getLogFetchOptions } = require('../utils/adminHelpers');
 
 exports.getLogs = async (req, res) => {
   try {
-    const { action, resourceType, page = 1, limit = 20, all } = req.query;
-    const shouldReturnAll = String(all).toLowerCase() === 'true';
+    const { action, resourceType } = req.query;
+    const { shouldReturnAll, pageValue, limitValue } = getLogFetchOptions(req.query);
 
     let query = {};
     if (action) query.action = action;
     if (resourceType) query.resourceType = resourceType;
-
-    const pageValue = Number(page) || 1;
-    const limitValue = shouldReturnAll ? 0 : (Number(limit) || 20);
 
     let logQuery = Log.find(query).populate('user', 'firstName lastName email role').sort('-createdAt');
 

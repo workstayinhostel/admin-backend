@@ -557,16 +557,32 @@ exports.mergeStudentToHostel = exports.assignHostelOwner;
  */
 exports.getLogs = async (req, res) => {
   try {
-    const { action, resourceType, page = 1, limit = 20 } = req.query;
+    const { action, resourceType } = req.query;
+    const { shouldReturnAll, pageValue, limitValue } = require('../utils/adminHelpers').getLogFetchOptions(req.query);
+
     let query = {};
     if (action) query.action = action;
     if (resourceType) query.resourceType = resourceType;
 
-    const skip = (page - 1) * limit;
-    const logs = await Log.find(query).populate('user', 'firstName lastName email role').sort('-createdAt').skip(skip).limit(parseInt(limit));
+    let logQuery = Log.find(query).populate('user', 'firstName lastName email role').sort('-createdAt');
+
+    if (!shouldReturnAll) {
+      const skip = (pageValue - 1) * limitValue;
+      logQuery = logQuery.skip(skip).limit(limitValue);
+    }
+
+    const logs = await logQuery.exec();
     const total = await Log.countDocuments(query);
 
-    res.status(200).json({ success: true, count: logs.length, total, pages: Math.ceil(total / limit), currentPage: parseInt(page), logs });
+    res.status(200).json({
+      success: true,
+      count: logs.length,
+      total,
+      pages: shouldReturnAll ? 1 : Math.ceil(total / limitValue),
+      currentPage: shouldReturnAll ? 1 : pageValue,
+      all: shouldReturnAll,
+      logs
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Error fetching logs' });
   }

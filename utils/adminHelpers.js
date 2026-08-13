@@ -55,6 +55,24 @@ const createAuditLog = async (payload) => {
   }
 };
 
+const getLogFetchOptions = (queryParams = {}) => {
+  const hasPaginationRequest = Object.prototype.hasOwnProperty.call(queryParams, 'page') ||
+    Object.prototype.hasOwnProperty.call(queryParams, 'limit');
+
+  const shouldReturnAll = queryParams.all === undefined
+    ? !hasPaginationRequest
+    : String(queryParams.all).toLowerCase() === 'true';
+
+  const pageValue = Number(queryParams.page) || 1;
+  const limitValue = shouldReturnAll ? 0 : (Number(queryParams.limit) || 20);
+
+  return {
+    shouldReturnAll,
+    pageValue,
+    limitValue
+  };
+};
+
 module.exports = {
   roleHierarchy,
   isAdminRole,
@@ -63,5 +81,6 @@ module.exports = {
   canDeactivateUser,
   canActivateUser,
   canDeleteUser,
-  createAuditLog
+  createAuditLog,
+  getLogFetchOptions
 };
