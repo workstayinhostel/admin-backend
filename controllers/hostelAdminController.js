@@ -69,6 +69,26 @@ const extractCoordinatesFromGoogleMaps = async (link) => {
 
 const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+const normalizeText = (value) => String(value ?? '')
+  .trim()
+  .replace(/\s+/g, ' ')
+  .toLowerCase();
+
+const normalizeMapLink = (value) => {
+  if (!value) return '';
+
+  return String(value)
+    .trim()
+    .replace(/\s+/g, '')
+    .replace(/\/+$/, '')
+    .replace(/[?#].*$/, '')
+    .toLowerCase();
+};
+
+const normalizePhone = (value) => String(value ?? '')
+  .replace(/\D/g, '')
+  .trim();
+
 const buildFoodItems = (payload) => {
   const foodItems = Array.isArray(payload?.foodItems) ? payload.foodItems : [];
   if (foodItems.length) {
@@ -171,18 +191,66 @@ const collectDeletedImageUrls = (previousImages, incomingImages, explicitDeleted
 };
 
 const findDuplicateHostel = async (payload) => {
-  const name = String(payload?.name || '').trim();
-  const address = String(payload?.location?.addressText || payload?.addressText || '').trim();
+  const name = normalizeText(payload?.name);
+  const address = normalizeText(payload?.location?.addressText || payload?.addressText);
+  const mapLink = normalizeMapLink(payload?.location?.googleMapLink || payload?.googleMapLink);
+  const phone = normalizePhone(payload?.phone || payload?.whatsappNumber || payload?.contactNumber);
+  const email = normalizeText(payload?.email || payload?.ownerEmail);
 
-  if (!name || !address) return null;
+  if (!name && !address && !mapLink && !phone && !email) return null;
 
-  return Hostel.findOne({
-    name: { $regex: `^${escapeRegex(name)}$`, $options: 'i' },
-    $or: [
-      { 'location.addressText': { $regex: `^${escapeRegex(address)}$`, $options: 'i' } },
-      { 'location.googleMapLink': { $regex: escapeRegex(address), $options: 'i' } }
-    ]
-  }).select('name location hostelCode').lean();
+  const orConditions = [];
+
+  if (name) {
+    orConditions.push({ name: { $regex: `^${escapeRegex(name)}$`, $options: 'i' } });
+  }
+
+  if (address) {
+    orConditions.push({ 'location.addressText': { $regex: `^${escapeRegex(address)}$`, $options: 'i' } });
+  }
+
+  if (mapLink) {
+    orConditions.push({ 'location.googleMapLink': { $regex: escapeRegex(mapLink), $options: 'i' } });
+  }
+
+  if (phone) {
+    orConditions.push(
+      { phone: { $regex: `^${escapeRegex(phone)}$`, $options: 'i' } },
+      { whatsappNumber: { $regex: `^${escapeRegex(phone)}$`, $options: 'i' } }
+    );
+  }
+
+  if (email) {
+    orConditions.push({ email: { $regex: `^${escapeRegex(email)}$`, $options: 'i' } });
+  }
+
+  if (!orConditions.length) return null;
+
+  const possibleMatches = await Hostel.find({ $or: orConditions })
+    .select('name location hostelCode phone whatsappNumber email')
+    .lean();
+
+  const currentName = name;
+  const currentAddress = address;
+  const currentMapLink = mapLink;
+  const currentPhone = phone;
+  const currentEmail = email;
+
+  return possibleMatches.find((hostel) => {
+    const hostelName = normalizeText(hostel?.name);
+    const hostelAddress = normalizeText(hostel?.location?.addressText);
+    const hostelMapLink = normalizeMapLink(hostel?.location?.googleMapLink);
+    const hostelPhone = normalizePhone(hostel?.phone || hostel?.whatsappNumber);
+    const hostelEmail = normalizeText(hostel?.email);
+
+    const matchesName = currentName && hostelName && hostelName === currentName;
+    const matchesAddress = currentAddress && hostelAddress && hostelAddress === currentAddress;
+    const matchesMapLink = currentMapLink && hostelMapLink && hostelMapLink === currentMapLink;
+    const matchesPhone = currentPhone && hostelPhone && hostelPhone === currentPhone;
+    const matchesEmail = currentEmail && hostelEmail && hostelEmail === currentEmail;
+
+    return matchesName || matchesAddress || matchesMapLink || matchesPhone || matchesEmail;
+  }) || null;
 };
 
 const enrichHostelWithMetrics = async (hostel) => {
@@ -244,7 +312,7 @@ exports.createHostel = async (req, res) => {
     if (duplicateHostel && payload.confirmDuplicate !== true) {
       return res.status(409).json({
         success: false,
-        message: 'A hostel with this name already exists in this location. Are you sure you want to add it?',
+        message: `Similar hostel already exists: ${duplicateHostel.name} (Hostel code: ${duplicateHostel.hostelCode}). Please check before adding another one.`,
         requiresConfirmation: true,
         duplicateHostel: {
           id: duplicateHostel._id,
