@@ -7,6 +7,7 @@ const User = require('../models/User');
 const { sendTemplateEmail } = require('../utils/emailService');
 const emailTemplates = require('../utils/emailTemplates');
 const logger = require('../config/logger');
+const { deleteFile } = require('../config/cloudinary');
 const { normalizeHostelType, getHostelPermission, createAuditLog, isAdminRole } = require('../utils/adminHelpers');
 const { generateHostelCode } = require('../utils/hostelHelpers');
 
@@ -91,6 +92,25 @@ const buildFoodItems = (payload) => {
   return [];
 };
 
+const normalizeRoomTypes = (roomTypes) => {
+  if (!Array.isArray(roomTypes)) return [];
+
+  return roomTypes.map(item => ({
+    roomType: String(item?.roomType || item?.name || 'Room').trim(),
+    price: Number(item?.price ?? 0),
+    capacity: Number(item?.capacity ?? item?.totalBeds ?? 1),
+    totalBeds: Number(item?.totalBeds ?? item?.capacity ?? 1),
+    bedsAvailable: Number(item?.bedsAvailable ?? item?.availableBeds ?? item?.capacity ?? 1),
+    bedConfigurations: Array.isArray(item?.bedConfigurations)
+      ? item.bedConfigurations.map(config => ({
+          name: String(config?.name || 'Bed').trim(),
+          totalBeds: Number(config?.totalBeds ?? 0),
+          availableBeds: Number(config?.availableBeds ?? 0)
+        }))
+      : []
+  })).filter(item => item.roomType);
+};
+
 const buildFacilities = (payload) => {
   return Array.isArray(payload?.facilities)
     ? payload.facilities
@@ -109,6 +129,45 @@ const buildImages = (payload) => {
     if (item?.url) return { url: item.url };
     return item;
   }).filter(Boolean);
+};
+
+const getCloudinaryPublicIdFromUrl = (url) => {
+  if (!url || typeof url !== 'string') return null;
+
+  try {
+    const cleaned = url.split('?')[0];
+    const match = cleaned.match(/\/upload\/(?:v\d+\/)?(.+?)(?:\.[a-zA-Z0-9]+)?$/i);
+    if (!match) return null;
+    return match[1];
+  } catch (error) {
+    return null;
+  }
+};
+
+const deleteCloudinaryImageByUrl = async (imageUrl) => {
+  if (!imageUrl) return false;
+
+  const publicId = getCloudinaryPublicIdFromUrl(imageUrl);
+  if (!publicId) return false;
+
+  try {
+    await deleteFile(publicId);
+    return true;
+  } catch (error) {
+    logger.warn(`Unable to delete Cloudinary image ${imageUrl}: ${error.message}`);
+    return false;
+  }
+};
+
+const collectDeletedImageUrls = (previousImages, incomingImages, explicitDeletedImages = []) => {
+  const previousUrls = (previousImages || []).map(img => img?.url).filter(Boolean);
+  const incomingUrls = (incomingImages || []).map(img => img?.url).filter(Boolean);
+  const deletedExplicit = Array.isArray(explicitDeletedImages)
+    ? explicitDeletedImages.map(item => typeof item === 'string' ? item : item?.url).filter(Boolean)
+    : [];
+
+  const removed = previousUrls.filter(url => !incomingUrls.includes(url));
+  return Array.from(new Set([...deletedExplicit, ...removed]));
 };
 
 const findDuplicateHostel = async (payload) => {
@@ -221,6 +280,7 @@ exports.createHostel = async (req, res) => {
     }
 
     const isAdminActor = ['founder', 'superadmin', 'admin'].includes(actor.role);
+    const isExplicitlyVerified = payload.isVerified === true || payload.isVerified === 'true' || payload.isVerified === 1 || payload.verificationStatus?.status === 'verified';
     const existingCodes = await Hostel.find({}, { hostelCode: 1 }).lean();
     let hostelCode = payload.hostelCode || generateHostelCode(existingCodes.map(item => item.hostelCode), process.env.HOSTEL_CODE_PREFIX || 'SIH');
     let existingHostel = await Hostel.findOne({ hostelCode });
@@ -273,15 +333,15 @@ exports.createHostel = async (req, res) => {
       foodMenuDescription: payload.foodMenuDescription || (foodItems.length ? foodItems.map(item => `${item.name}: ${item.daysServing.join(', ')}`).join(' | ') : ''),
       facilities: normalizedFacilities,
       images,
-      isApproved: isAdminActor,
-      isPending: !isAdminActor,
-      isVerified: isAdminActor,
-      isLive: isAdminActor,
+      isApproved: isExplicitlyVerified,
+      isPending: !isExplicitlyVerified,
+      isVerified: isExplicitlyVerified,
+      isLive: isExplicitlyVerified,
       isActive: true,
       verificationStatus: {
-        status: isAdminActor ? 'verified' : 'pending',
-        verifiedBy: isAdminActor ? actor._id : undefined,
-        verificationDate: isAdminActor ? new Date() : undefined
+        status: isExplicitlyVerified ? 'verified' : 'pending',
+        verifiedBy: isExplicitlyVerified ? actor._id : undefined,
+        verificationDate: isExplicitlyVerified ? new Date() : undefined
       }
     });
 
@@ -314,42 +374,141 @@ exports.createHostel = async (req, res) => {
 
 exports.getHostels = async (req, res) => {
   try {
-    const { ownerId, status, verificationStatus, search, rankMin, rankMax, createdAfter, createdBefore, isActive, sortBy = 'createdAt', order = 'desc', type } = req.query;
+    const {
+      search,
+      type,
+      verificationStatus,
+      isLive,
+      isVerified,
+      isApproved,
+      minRating,
+      page = '1',
+      limit = '25',
+      sort = 'rank:desc'
+    } = req.query;
+
     const query = {};
 
-    if (ownerId) query.owner = ownerId;
-    if (verificationStatus || status) query['verificationStatus.status'] = verificationStatus || status;
-    if (type) {
-      const normalizedType = normalizeHostelType(type);
-      if (normalizedType) query.type = normalizedType;
+    const normalizedType = type ? normalizeHostelType(String(type)) : null;
+    if (type && !normalizedType) {
+      return res.status(400).json({ success: false, message: 'Type must be one of boys, girls or pg' });
     }
+    if (normalizedType) query.type = normalizedType;
+
+    const normalizedVerificationStatus = verificationStatus ? String(verificationStatus).trim().toLowerCase() : '';
+    if (verificationStatus && !['verified', 'pending', 'rejected'].includes(normalizedVerificationStatus)) {
+      return res.status(400).json({ success: false, message: 'verificationStatus must be one of verified, pending or rejected' });
+    }
+    if (normalizedVerificationStatus) query['verificationStatus.status'] = normalizedVerificationStatus;
+
+    if (isLive !== undefined) {
+      const value = String(isLive).trim().toLowerCase();
+      if (!['true', 'false'].includes(value)) {
+        return res.status(400).json({ success: false, message: 'isLive must be true or false' });
+      }
+      query.isLive = value === 'true';
+    }
+
+    if (isVerified !== undefined) {
+      const value = String(isVerified).trim().toLowerCase();
+      if (!['true', 'false'].includes(value)) {
+        return res.status(400).json({ success: false, message: 'isVerified must be true or false' });
+      }
+      query.isVerified = value === 'true';
+    }
+
+    if (isApproved !== undefined) {
+      const value = String(isApproved).trim().toLowerCase();
+      if (!['true', 'false'].includes(value)) {
+        return res.status(400).json({ success: false, message: 'isApproved must be true or false' });
+      }
+      query.isApproved = value === 'true';
+    }
+
     if (search) {
-      query.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { hostelCode: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } }
+      const text = String(search).trim();
+      if (text) {
+        query.$or = [
+          { name: { $regex: text, $options: 'i' } },
+          { hostelCode: { $regex: text, $options: 'i' } },
+          { 'location.addressText': { $regex: text, $options: 'i' } },
+          { 'location.googleMapLink': { $regex: text, $options: 'i' } }
+        ];
+      }
+    }
+
+    if (minRating !== undefined) {
+      const ratingValue = Number(minRating);
+      if (!Number.isFinite(ratingValue) || ratingValue < 1 || ratingValue > 5) {
+        return res.status(400).json({ success: false, message: 'minRating must be a number between 1 and 5' });
+      }
+      query.$and = [
+        ...(Array.isArray(query.$and) ? query.$and : []),
+        {
+          $or: [
+            { 'ratings.average': { $gte: ratingValue } },
+            { averageRating: { $gte: ratingValue } }
+          ]
+        }
       ];
     }
-    if (rankMin !== undefined || rankMax !== undefined) {
-      query.rank = {};
-      if (rankMin !== undefined) query.rank.$gte = Number(rankMin);
-      if (rankMax !== undefined) query.rank.$lte = Number(rankMax);
-    }
-    if (createdAfter || createdBefore) {
-      query.createdAt = {};
-      if (createdAfter) query.createdAt.$gte = new Date(createdAfter);
-      if (createdBefore) query.createdAt.$lte = new Date(createdBefore);
-    }
-    if (isActive !== undefined) query.isActive = isActive === 'true';
 
-    const sort = {};
-    sort[sortBy] = order === 'asc' ? 1 : -1;
-    const hostels = await Hostel.find(query).populate('owner', 'firstName lastName email role phone').sort(sort);
+    const pageNumber = Number(page);
+    const limitNumber = Number(limit);
+    if (!Number.isInteger(pageNumber) || pageNumber < 1) {
+      return res.status(400).json({ success: false, message: 'page must be a positive integer' });
+    }
+    if (!Number.isInteger(limitNumber) || limitNumber < 1 || limitNumber > 100) {
+      return res.status(400).json({ success: false, message: 'limit must be an integer between 1 and 100' });
+    }
+
+    const allowedSortFields = new Map([
+      ['rank', 'rank'],
+      ['rating', 'averageRating'],
+      ['name', 'name'],
+      ['createdAt', 'createdAt'],
+      ['isLive', 'isLive'],
+      ['isVerified', 'isVerified'],
+      ['isApproved', 'isApproved']
+    ]);
+
+    const sortEntry = String(sort).trim();
+    const [sortField, sortOrder = 'desc'] = sortEntry.split(':');
+    const sortKey = allowedSortFields.get(sortField);
+    if (!sortKey) {
+      return res.status(400).json({ success: false, message: 'sort must be one of rank, rating, name, createdAt, isLive, isVerified, isApproved' });
+    }
+    if (!['asc', 'desc'].includes(String(sortOrder).toLowerCase())) {
+      return res.status(400).json({ success: false, message: 'sort order must be asc or desc' });
+    }
+
+    const sortQuery = {};
+    sortQuery[sortKey] = String(sortOrder).toLowerCase() === 'asc' ? 1 : -1;
+
+    if (sortKey === 'averageRating') {
+      sortQuery.averageRating = String(sortOrder).toLowerCase() === 'asc' ? 1 : -1;
+    }
+
+    const total = await Hostel.countDocuments(query);
+    const skip = (pageNumber - 1) * limitNumber;
+    const hostels = await Hostel.find(query)
+      .populate('owner', 'firstName lastName email role phone')
+      .sort(sortQuery)
+      .skip(skip)
+      .limit(limitNumber);
+
     const enrichedHostels = await Promise.all(hostels.map(enrichHostelWithMetrics));
-    res.status(200).json({ success: true, count: enrichedHostels.length, hostels: enrichedHostels });
+
+    res.status(200).json({
+      success: true,
+      hostels: enrichedHostels,
+      total,
+      page: pageNumber,
+      limit: limitNumber
+    });
   } catch (error) {
     logger.error('Get hostels error:', error);
-    res.status(500).json({ success: false, message: 'Error fetching hostels' });
+    res.status(500).json({ success: false, message: error.message || 'Error fetching hostels' });
   }
 };
 
@@ -382,55 +541,124 @@ exports.updateHostel = async (req, res) => {
     const { isOwner, isAdmin, canManage } = getHostelPermission(req.user, hostel);
     if (!canManage) return res.status(403).json({ success: false, message: 'You cannot edit this hostel' });
 
-    const ownerUpdatable = ['name', 'type', 'description', 'phone', 'email', 'whatsappNumber', 'foodItems', 'foodMenuDescription', 'location', 'roomTypes', 'facilities', 'images'];
-    const adminOnlyUpdatable = ['hostelCode', 'rank', 'isSponsored', 'isSponsorFeatured', 'sponsorPackage', 'isApproved', 'isVerified', 'isLive', 'isPending', 'verificationStatus', 'isActive', 'expiryDate', 'activeDate'];
     const before = hostel.toObject();
     const changedFields = [];
+    const ownerUpdatable = new Set([
+      'name', 'type', 'description', 'phone', 'email', 'whatsappNumber', 'foodItems', 'foodMenuDescription',
+      'location', 'roomTypes', 'facilities', 'images', 'addressText', 'googleMapLink', 'coordinates',
+      'averageRating', 'ratingCount', 'totalBookings', 'viewCount', 'foodMenu', 'foodMenuDescription'
+    ]);
+    const adminOnlyUpdatable = new Set([
+      'hostelCode', 'rank', 'isSponsored', 'isSponsorFeatured', 'sponsorPackage', 'isApproved', 'isVerified',
+      'isLive', 'isPending', 'verificationStatus', 'isActive', 'expiryDate', 'activeDate', 'isDeleted',
+      'sponsorExpiresAt', 'verificationStatus.status', 'verificationStatus.verifiedBy', 'verificationStatus.verificationDate', 'verificationStatus.rejectionReason'
+    ]);
+    const blockedFields = new Set(['_id', 'id', 'hostelCode', '__v', 'createdAt', 'updatedAt']);
+    const incoming = req.body || {};
 
-    for (const field of ownerUpdatable) {
-      if (req.body[field] !== undefined) {
-        if (field === 'type') {
-          const normalizedType = normalizeHostelType(req.body[field]);
-          if (!normalizedType) return res.status(400).json({ success: false, message: 'Type must be one of boys, girls or pg' });
-          hostel[field] = normalizedType;
-        } else if (field === 'images') {
-          hostel.images = buildImages({ images: req.body.images });
-        } else if (field === 'location') {
-          const incomingLoc = req.body.location || {};
-          hostel.location.addressText = incomingLoc.addressText || hostel.location.addressText;
-          const newMapLink = incomingLoc.googleMapLink;
-          
-          if (newMapLink && newMapLink !== hostel.location.googleMapLink) {
-            hostel.location.googleMapLink = newMapLink;
-            const resolvedCoords = await extractCoordinatesFromGoogleMaps(newMapLink);
-            if (resolvedCoords[0] !== 0 || resolvedCoords[1] !== 0) {
-              hostel.location.coordinates = {
-                type: 'Point',
-                coordinates: resolvedCoords
-              };
-            }
-          }
-        } else {
-          hostel[field] = req.body[field];
+    const handleLocationUpdate = async (locationValue) => {
+      const incomingLoc = locationValue || {};
+      if (incomingLoc.addressText) hostel.location.addressText = incomingLoc.addressText;
+      if (incomingLoc.googleMapLink) {
+        hostel.location.googleMapLink = incomingLoc.googleMapLink;
+        const resolvedCoords = await extractCoordinatesFromGoogleMaps(incomingLoc.googleMapLink);
+        if (resolvedCoords[0] !== 0 || resolvedCoords[1] !== 0) {
+          hostel.location.coordinates = { type: 'Point', coordinates: resolvedCoords };
         }
-        changedFields.push(field);
       }
-    }
+      if (incomingLoc.coordinates && Array.isArray(incomingLoc.coordinates.coordinates) && incomingLoc.coordinates.coordinates.length === 2) {
+        hostel.location.coordinates = { type: 'Point', coordinates: incomingLoc.coordinates.coordinates.map(Number) };
+      }
+    };
 
-    for (const field of adminOnlyUpdatable) {
-      if (req.body[field] !== undefined) {
+    const handleImageUpdate = async (imageValue, deletedExplicit = []) => {
+      const previousImages = hostel.images || [];
+      const cleanedImages = buildImages({ images: imageValue });
+      const removedUrls = collectDeletedImageUrls(previousImages, cleanedImages, deletedExplicit);
+
+      for (const imageUrl of removedUrls) {
+        await deleteCloudinaryImageByUrl(imageUrl);
+      }
+
+      hostel.images = cleanedImages;
+      changedFields.push('images');
+    };
+
+    for (const [field, value] of Object.entries(incoming)) {
+      if (blockedFields.has(field)) continue;
+      if (field === 'ownerId') {
+        if (!isAdmin) return res.status(403).json({ success: false, message: 'Only admins can change hostel ownership' });
+        const owner = await User.findById(value);
+        if (!owner) return res.status(400).json({ success: false, message: 'Owner not found' });
+        hostel.owner = owner._id;
+        changedFields.push('owner');
+        continue;
+      }
+
+      if (field === 'type') {
+        const normalizedType = normalizeHostelType(value);
+        if (!normalizedType) return res.status(400).json({ success: false, message: 'Type must be one of boys, girls or pg' });
+        hostel[field] = normalizedType;
+        changedFields.push(field);
+        continue;
+      }
+
+      if (field === 'foodItems') {
+        if (!ownerUpdatable.has(field) && !isAdmin) return res.status(403).json({ success: false, message: `You cannot edit ${field}` });
+        hostel.foodItems = buildFoodItems({ foodItems: value });
+        changedFields.push(field);
+        continue;
+      }
+
+      if (field === 'roomTypes') {
+        if (!ownerUpdatable.has(field) && !isAdmin) return res.status(403).json({ success: false, message: `You cannot edit ${field}` });
+        hostel.roomTypes = normalizeRoomTypes(value);
+        changedFields.push(field);
+        continue;
+      }
+
+      if (field === 'facilities') {
+        if (!ownerUpdatable.has(field) && !isAdmin) return res.status(403).json({ success: false, message: `You cannot edit ${field}` });
+        hostel.facilities = buildFacilities({ facilities: value });
+        changedFields.push(field);
+        continue;
+      }
+
+      if (field === 'images') {
+        if (!ownerUpdatable.has(field) && !isAdmin) return res.status(403).json({ success: false, message: `You cannot edit ${field}` });
+        await handleImageUpdate(value, incoming.deletedImages || incoming.deletedImageUrls || []);
+        continue;
+      }
+
+      if (field === 'location') {
+        if (!ownerUpdatable.has(field) && !isAdmin) return res.status(403).json({ success: false, message: `You cannot edit ${field}` });
+        await handleLocationUpdate(value);
+        changedFields.push(field);
+        continue;
+      }
+
+      if (adminOnlyUpdatable.has(field)) {
         if (!isAdmin) return res.status(403).json({ success: false, message: `Only admins can change ${field}` });
-        hostel[field] = req.body[field];
+        hostel[field] = value;
         changedFields.push(field);
+        continue;
       }
+
+      const isAllowedOwnerField = ownerUpdatable.has(field) || ['name', 'description', 'phone', 'email', 'whatsappNumber', 'foodMenuDescription'].includes(field);
+      if (!isAllowedOwnerField && !isAdmin) {
+        return res.status(403).json({ success: false, message: `You cannot edit ${field}` });
+      }
+
+      if (!isAdmin && !isAllowedOwnerField) {
+        return res.status(403).json({ success: false, message: `You cannot edit ${field}` });
+      }
+
+      hostel[field] = value;
+      changedFields.push(field);
     }
 
-    if (req.body.ownerId !== undefined) {
-      if (!isAdmin) return res.status(403).json({ success: false, message: 'Only admins can change hostel ownership' });
-      const owner = await User.findById(req.body.ownerId);
-      if (!owner) return res.status(400).json({ success: false, message: 'Owner not found' });
-      hostel.owner = owner._id;
-      changedFields.push('owner');
+    if (req.body.foodMenuDescription !== undefined && req.body.foodItems === undefined && Array.isArray(hostel.foodItems)) {
+      hostel.foodMenuDescription = req.body.foodMenuDescription || hostel.foodItems.map(item => `${item.name}: ${item.daysServing.join(', ')}`).join(' | ');
     }
 
     await hostel.save();
