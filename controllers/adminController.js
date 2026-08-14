@@ -9,6 +9,7 @@ const emailTemplates = require('../utils/emailTemplates');
 const logger = require('../config/logger');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
+const axios = require('axios');
 const multer = require('multer');
 const { uploadMultipleFiles } = require('../config/cloudinary');
 
@@ -33,6 +34,53 @@ const normalizeHostelType = (value) => {
   if (['girls', 'female', 'girl'].includes(normalized)) return 'girls';
   if (['pg', 'paying guest', 'payingguest'].includes(normalized)) return 'pg';
   return null;
+};
+const extractCoordinatesFromGoogleMaps = async (link) => {
+  if (!link) return [0, 0];
+
+  let targetUrl = String(link).trim();
+  if (!targetUrl) return [0, 0];
+
+  const isShortGoogleLink = /(?:maps\.app\.goo\.gl|goo\.gl\/maps)/i.test(targetUrl);
+  if (isShortGoogleLink) {
+    try {
+      const response = await axios.get(targetUrl, {
+        maxRedirects: 10,
+        validateStatus: (status) => status >= 200 && status < 400,
+        timeout: 8000,
+        headers: { 'User-Agent': 'Mozilla/5.0' }
+      });
+      targetUrl = response.request?.res?.responseUrl || response.request?.responseUrl || targetUrl;
+    } catch (error) {
+      logger.warn(`Unable to resolve shortened Google Maps link: ${error.message}`);
+    }
+  }
+
+  const patterns = [
+    /[?&](?:q|query|ll|center)=(-?\d{1,3}(?:\.\d+)?),\s*(-?\d{1,3}(?:\.\d+)?)/i,
+    /@(-?\d{1,3}(?:\.\d+)?),\s*(-?\d{1,3}(?:\.\d+)?)(?:,[-\d.]+)?(?:[/?#]|$)/i,
+    /!3d(-?\d{1,3}(?:\.\d+)?)!4d(-?\d{1,3}(?:\.\d+)?)/i,
+    /(?:lat|latitude)[=,:](-?\d{1,3}(?:\.\d+)?)[^\d-]*?(?:lng|lon|longitude)[=,:](-?\d{1,3}(?:\.\d+)?)/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = targetUrl.match(pattern);
+    if (!match) continue;
+
+    const lat = Number(match[1]);
+    const lng = Number(match[2] || match[1]);
+
+    if (
+      Number.isFinite(lat) &&
+      Number.isFinite(lng) &&
+      lat >= -90 && lat <= 90 &&
+      lng >= -180 && lng <= 180
+    ) {
+      return [lng, lat];
+    }
+  }
+
+  return [0, 0];
 };
 const getHostelPermission = (user, hostel) => {
   const isOwner = Boolean(hostel?.owner && hostel.owner.toString() === user?._id?.toString());
@@ -815,9 +863,9 @@ exports.createHostel = async (req, res) => {
     }
 
     const location = payload.location || {};
-    const coordinates = Array.isArray(location.coordinates?.coordinates)
+    const coordinates = Array.isArray(location.coordinates?.coordinates) && location.coordinates.coordinates.length === 2
       ? location.coordinates.coordinates.map(Number)
-      : [0, 0];
+      : await extractCoordinatesFromGoogleMaps(location.googleMapLink || payload.googleMapLink || '');
 
     const normalizedRoomTypes = Array.isArray(payload.roomTypes) ? payload.roomTypes.map(item => ({
       roomType: item.roomType || item.name || 'Room',
