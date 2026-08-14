@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
-const axios = require('axios'); // Added to resolve short maps URLs via redirects
+const axios = require('axios');
+const crypto = require('crypto');
 const Hostel = require('../models/Hostel');
 const Booking = require('../models/Booking');
 const Review = require('../models/Review');
@@ -262,18 +263,19 @@ const enrichHostelWithMetrics = async (hostel) => {
   };
 };
 
+const imageUploadSessions = new Map();
+
 const uploadHostelImages = async (req, res) => {
   try {
     if (!req.files || !req.files.length) {
       return res.status(200).json({ success: true, images: [], message: 'No images uploaded' });
     }
 
-    // Prevent duplicate uploads by removing files with duplicate buffer content
     const uniqueFiles = [];
     const processedBuffers = new Set();
-    
+
     for (const file of req.files) {
-      const bufferHash = file.buffer.toString('base64').substring(0, 50); // Use first 50 chars as hash
+      const bufferHash = file.buffer.toString('base64').substring(0, 50);
       if (!processedBuffers.has(bufferHash)) {
         uniqueFiles.push(file);
         processedBuffers.add(bufferHash);
@@ -284,16 +286,100 @@ const uploadHostelImages = async (req, res) => {
       return res.status(200).json({ success: true, images: [], message: 'No unique images to upload' });
     }
 
-    const uploaded = await uploadMultipleFiles(uniqueFiles.map(file => ({ buffer: file.buffer, originalname: file.originalname })), 'hostels');
-    const imageUrls = uploaded.map(result => result.secure_url || result.url || '');
+    const requestId = crypto.randomUUID();
+    const hostelName = String(req.body?.hostelName || req.body?.name || 'hostel').trim();
+    const hasLargeImages = uniqueFiles.some(file => (file.size || file.buffer?.length || 0) > 200 * 1024);
 
-    res.status(200).json({ success: true, images: imageUrls.filter(Boolean), message: 'Images uploaded successfully' });
+    imageUploadSessions.set(requestId, {
+      status: hasLargeImages ? 'compressing' : 'processing',
+      images: [],
+      message: hasLargeImages ? 'Compressing images and uploading them in the background' : 'Uploading images in the background'
+    });
+
+    setImmediate(async () => {
+      try {
+        const session = imageUploadSessions.get(requestId);
+        if (session) {
+          session.status = 'processing';
+          session.message = 'Uploading images in the background';
+        }
+
+        const uploaded = await uploadMultipleFiles(
+          uniqueFiles.map(file => ({ buffer: file.buffer, originalname: file.originalname })),
+          'hostels',
+          hostelName
+        );
+
+        const imageUrls = uploaded.map(result => result.secure_url || result.url || '').filter(Boolean);
+
+        if (imageUploadSessions.has(requestId)) {
+          imageUploadSessions.set(requestId, {
+            status: 'completed',
+            images: imageUrls,
+            message: 'Images uploaded successfully',
+            completedAt: new Date().toISOString()
+          });
+        }
+      } catch (error) {
+        logger.error('Upload hostel images error:', error);
+        if (imageUploadSessions.has(requestId)) {
+          imageUploadSessions.set(requestId, {
+            status: 'failed',
+            images: [],
+            message: error.message || 'Error uploading hostel images',
+            error: error.message
+          });
+        }
+      }
+    });
+
+    if (hasLargeImages) {
+      return res.status(202).json({
+        success: true,
+        status: 'compressing',
+        requestId,
+        images: [],
+        message: 'Compressing images in the background. Hostel creation can continue while upload finishes.'
+      });
+    }
+
+    return res.status(202).json({
+      success: true,
+      status: 'processing',
+      requestId,
+      images: [],
+      message: 'Uploading images in the background. Your frontend can continue while the links are being saved.'
+    });
   } catch (error) {
     logger.error('Upload hostel images error:', error);
     res.status(500).json({ success: false, message: error.message || 'Error uploading hostel images' });
   }
 };
+
+const getImageUploadStatus = async (req, res) => {
+  try {
+    const { requestId } = req.params;
+    const session = imageUploadSessions.get(requestId);
+
+    if (!session) {
+      return res.status(404).json({ success: false, message: 'Upload session not found' });
+    }
+
+    return res.status(200).json({
+      success: true,
+      requestId,
+      status: session.status,
+      images: session.images || [],
+      message: session.message || 'Upload status unknown'
+    });
+  } catch (error) {
+    logger.error('Get image upload status error:', error);
+    return res.status(500).json({ success: false, message: 'Error fetching upload status' });
+  }
+};
+
 exports.uploadHostelImages = uploadHostelImages;
+exports.getImageUploadStatus = getImageUploadStatus;
 
 exports.createHostel = async (req, res) => {
   try {

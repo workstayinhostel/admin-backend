@@ -17,6 +17,15 @@ if (isConfigured) {
 
 const BUCKET_NAME = 'STAYINHOSTEL-HOSTELIMAGES';
 
+const slugifyForStorage = (value) => {
+  return String(value || 'hostel')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60) || 'hostel';
+};
+
 /**
  * Compresses image buffer targeting 100KB - 200KB with quality compression only (no ratio scaling)
  * @param {Buffer} buffer - Original image buffer
@@ -24,23 +33,29 @@ const BUCKET_NAME = 'STAYINHOSTEL-HOSTELIMAGES';
  */
 const compressImageToTargetSize = async (buffer) => {
   try {
-    let quality = 80;
-    let compressedBuffer = await sharp(buffer)
-      .webp({ quality, nearLossless: true })
-      .toBuffer();
+    if (!buffer || buffer.length <= 200 * 1024) {
+      return buffer;
+    }
 
-    // Iteratively lower quality down to 30 if size is still above 200KB
-    while (compressedBuffer.length > 200 * 1024 && quality > 30) {
-      quality -= 10;
+    let quality = 80;
+    let compressedBuffer = buffer;
+
+    while (quality >= 30) {
       compressedBuffer = await sharp(buffer)
-        .webp({ quality, nearLossless: true })
+        .webp({ quality, nearLossless: false, effort: 4 })
         .toBuffer();
+
+      if (compressedBuffer.length <= 200 * 1024) {
+        return compressedBuffer;
+      }
+
+      quality -= 10;
     }
 
     return compressedBuffer;
   } catch (error) {
     logger.error('Image compression error:', error);
-    return buffer; // Fallback to raw buffer if compression fails
+    return buffer;
   }
 };
 
@@ -86,15 +101,21 @@ const uploadFile = async (fileBuffer, folder, fileName) => {
  * @param {string} folder - Storage folder path
  * @returns {Promise<Array>}
  */
-const uploadMultipleFiles = async (files, folder) => {
+const uploadMultipleFiles = async (files, folder, hostelName = '') => {
   try {
-    const uploadPromises = files.map((file) => {
-      const baseName = file.originalname ? file.originalname.replace(/\.[^/.]+$/, '') : 'image';
-      const safeName = baseName.replace(/[^a-zA-Z0-9-_]/g, '_').slice(0, 30);
-      
-      // Fixed: Added crypto random bytes + timestamp to completely prevent duplicate filenames
-      const uniqueSuffix = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
-      const uniqueFileName = `${safeName}_${uniqueSuffix}`;
+    const slug = slugifyForStorage(hostelName);
+    const uploadPromises = files.map((file, index) => {
+      const originalBaseName = file.originalname ? file.originalname.replace(/\.[^/.]+$/, '') : 'image';
+      const safeOriginal = originalBaseName.replace(/[^a-zA-Z0-9-_]/g, '-').slice(0, 30) || 'image';
+
+      let uniqueFileName;
+      if (slug && slug !== 'hostel') {
+        const isFirstFile = index === 0;
+        uniqueFileName = isFirstFile ? `${slug}` : `${slug}-${index + 1}`;
+      } else {
+        const uniqueSuffix = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+        uniqueFileName = `${safeOriginal}_${uniqueSuffix}`;
+      }
 
       return uploadFile(file.buffer, folder, uniqueFileName);
     });
