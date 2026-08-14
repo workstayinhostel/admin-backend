@@ -25,6 +25,14 @@ const protect = async (req, res, next) => {
       });
     }
 
+    const incomingTokenHash = user.getSessionTokenHash(token);
+    if (user.activeSessionToken && user.activeSessionToken !== incomingTokenHash) {
+      return res.status(401).json({
+        success: false,
+        message: 'Your session has expired. Please log in again.'
+      });
+    }
+
     if (!user.isActive && !user.forcePasswordChange) {
       return res.status(401).json({
         success: false,

@@ -143,12 +143,41 @@ const buildFacilities = (payload) => {
 };
 
 const buildImages = (payload) => {
-  if (!Array.isArray(payload?.images)) return [];
-  return payload.images.slice(0, 5).map(item => {
-    if (typeof item === 'string') return { url: item };
-    if (item?.url) return { url: item.url };
-    return item;
-  }).filter(Boolean);
+  if (!payload?.images) {
+    logger.debug('[BUILD IMAGES] No images in payload');
+    return [];
+  }
+
+  const images = Array.isArray(payload.images) ? payload.images : [];
+
+  if (!Array.isArray(images) || images.length === 0) {
+    logger.warn(`[BUILD IMAGES] Invalid images format: ${typeof payload.images}`);
+    return [];
+  }
+
+  const processed = [];
+
+  images.forEach((item) => {
+    let imageObj = null;
+
+    if (typeof item === 'string' && item.trim()) {
+      imageObj = { url: item.trim() };
+    } else if (typeof item === 'object' && item !== null && item.url && typeof item.url === 'string') {
+      imageObj = { url: item.url.trim() };
+    } else if (typeof item === 'object' && item !== null && item.url === undefined) {
+      imageObj = item;
+    } else {
+      logger.warn('[BUILD IMAGES] Invalid image entry skipped');
+      return;
+    }
+
+    if (imageObj && imageObj.url) {
+      processed.push(imageObj);
+    }
+  });
+
+  logger.info(`[BUILD IMAGES] Prepared ${processed.length}/${images.length} image(s) for database`);
+  return processed;
 };
 
 const deleteSupabaseImageByUrl = async (imageUrl) => {
@@ -265,38 +294,42 @@ const enrichHostelWithMetrics = async (hostel) => {
 const uploadHostelImages = async (req, res) => {
   try {
     if (!req.files || !req.files.length) {
+      logger.warn('No files received in request');
       return res.status(200).json({ success: true, images: [], message: 'No images uploaded' });
     }
 
-    const uniqueFiles = [];
-    const processedBuffers = new Set();
+    const uniqueFiles = req.files;
+    const hostelName = String(req.body?.hostelName || req.body?.name || '').trim();
 
-    for (const file of req.files) {
-      const bufferHash = file.buffer.toString('base64').substring(0, 50);
-      if (!processedBuffers.has(bufferHash)) {
-        uniqueFiles.push(file);
-        processedBuffers.add(bufferHash);
-      }
-    }
+    logger.info(`Uploading ${uniqueFiles.length} image(s)${hostelName ? ` for "${hostelName}"` : ''}`);
 
-    if (!uniqueFiles.length) {
-      return res.status(200).json({ success: true, images: [], message: 'No unique images to upload' });
-    }
-
-    const hostelName = String(req.body?.hostelName || req.body?.name || 'hostel').trim();
-    const uploaded = await uploadMultipleFiles(
+    const uploadResult = await uploadMultipleFiles(
       uniqueFiles.map(file => ({ buffer: file.buffer, originalname: file.originalname })),
       'hostels',
       hostelName
     );
 
-    const imageUrls = uploaded.map(result => result.secure_url || result.url || '').filter(Boolean);
+    const { successful = [], failed = [] } = uploadResult;
+    const imageUrls = successful.map(result => result.secure_url || result.url || '').filter(Boolean);
 
-    res.status(200).json({
-      success: true,
+    logger.info(`Upload complete: ${imageUrls.length}/${uniqueFiles.length} successful, ${failed.length} failed`);
+
+    if (failed.length > 0) {
+      logger.warn(`Image upload failures: ${failed.length}`);
+    }
+
+    const response = {
+      success: imageUrls.length > 0,
       images: imageUrls,
-      message: 'Images uploaded successfully. Please wait while the hostel is being created.'
-    });
+      uploadedCount: imageUrls.length,
+      failedCount: failed.length,
+      totalRequested: req.files.length,
+      message: imageUrls.length > 0
+        ? `Uploaded ${imageUrls.length}/${uniqueFiles.length} image(s). ${failed.length > 0 ? `${failed.length} failed.` : 'All images uploaded.'}`
+        : 'Image upload failed. Please try again.'
+    };
+
+    res.status(200).json(response);
   } catch (error) {
     logger.error('Upload hostel images error:', error);
     res.status(500).json({ success: false, message: error.message || 'Error uploading hostel images' });
@@ -310,7 +343,8 @@ exports.createHostel = async (req, res) => {
     const actor = req.user;
     const payload = req.body;
 
-    // ===== STEP 1: Validate required fields =====
+    logger.info(`Creating hostel: "${payload.name}" (${payload.type})`);
+
     if (!payload.name || !payload.type || !payload.description || !payload.location || !payload.phone) {
       return res.status(400).json({ success: false, message: 'name, type, description, location and phone are required' });
     }
@@ -392,6 +426,11 @@ exports.createHostel = async (req, res) => {
     const normalizedFacilities = buildFacilities(payload);
     const images = buildImages(payload);
 
+    logger.info(`Saving hostel "${payload.name}" with ${images.length} image(s); code: ${hostelCode}`);
+    if (images.length === 0) {
+      logger.warn('[CREATE HOSTEL] No images provided for this hostel');
+    }
+
     const hostel = await Hostel.create({
       name: payload.name,
       owner: owner ? owner._id : null,
@@ -423,6 +462,8 @@ exports.createHostel = async (req, res) => {
       }
     });
 
+    logger.info(`Hostel created successfully: ${hostel.name} (${hostel.type}) | code: ${hostel.hostelCode} | images: ${hostel.images.length}`);
+
     if (owner) {
       owner.associatedHostels = owner.associatedHostels || [];
       if (!owner.associatedHostels.includes(hostel._id)) owner.associatedHostels.push(hostel._id);
@@ -444,10 +485,17 @@ exports.createHostel = async (req, res) => {
     });
 
     const successMessage = owner
-      ? `Hostel (${hostel.hostelCode}) named ${hostel.name} created successfully.`
-      : `Hostel (${hostel.hostelCode}) named ${hostel.name} created successfully without an assigned owner.`;
+      ? `Hostel (${hostel.hostelCode}) named ${hostel.name} created successfully with ${hostel.images.length} image${hostel.images.length !== 1 ? 's' : ''}.`
+      : `Hostel (${hostel.hostelCode}) named ${hostel.name} created successfully with ${hostel.images.length} image${hostel.images.length !== 1 ? 's' : ''} without an assigned owner.`;
 
-    res.status(201).json({ success: true, message: successMessage, hostel });
+    res.status(201).json({ 
+      success: true, 
+      message: successMessage, 
+      hostel: {
+        ...hostel.toObject(),
+        imageCount: hostel.images.length
+      }
+    });
   } catch (error) {
     logger.error('Create hostel error:', error);
     res.status(500).json({ success: false, message: error.message || 'Error creating hostel' });

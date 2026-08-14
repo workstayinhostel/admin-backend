@@ -100,6 +100,8 @@ exports.adminLogin = async (req, res) => {
       return res.status(401).json({ success: false, message: 'Account is deactivated' });
     }
 
+    const token = user.getSignedJwtToken();
+    user.activeSessionToken = user.getSessionTokenHash(token);
     user.lastLogin = new Date();
     user.loginCount = (user.loginCount || 0) + 1;
     user.ipAddress = req.ip;
@@ -116,7 +118,6 @@ exports.adminLogin = async (req, res) => {
       userAgent: req.get('user-agent')
     });
 
-    const token = user.getSignedJwtToken();
     logger.info(`Admin logged in: ${email} (${user.role})`);
 
     res.status(200).json({

@@ -24,6 +24,7 @@ const userSchema = new mongoose.Schema({
   resetPasswordExpiry: Date,
   lastPasswordChangeAt: Date,
   forcePasswordChange: Boolean,
+  activeSessionToken: { type: String, default: null },
   lastLogin: Date,
   loginCount: Number,
   ipAddress: String
@@ -55,8 +56,13 @@ userSchema.methods.matchPassword = async function (enteredPassword) {
 userSchema.methods.getSignedJwtToken = function () {
   const jwt = require('jsonwebtoken');
   return jwt.sign({ id: this._id, role: this.role }, process.env.JWT_SECRET || 'fallback_secret', {
-    expiresIn: process.env.JWT_EXPIRE || '5h'
+    expiresIn: process.env.JWT_EXPIRE || '24h'
   });
+};
+
+userSchema.methods.getSessionTokenHash = function (token) {
+  const crypto = require('crypto');
+  return crypto.createHash('sha256').update(String(token || '')).digest('hex');
 };
 
 module.exports = mongoose.model('User', userSchema);

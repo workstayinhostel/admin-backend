@@ -54,6 +54,8 @@ exports.adminLogin = async (req, res) => {
       return res.status(401).json({ success: false, message });
     }
 
+    const token = user.getSignedJwtToken();
+    user.activeSessionToken = user.getSessionTokenHash(token);
     user.lastLogin = new Date();
     user.loginCount = (user.loginCount || 0) + 1;
     user.ipAddress = req.ip;
@@ -71,7 +73,6 @@ exports.adminLogin = async (req, res) => {
       status: 'success'
     });
 
-    const token = user.getSignedJwtToken();
     res.status(200).json({
       success: true,
       message: user.forcePasswordChange ? 'Password reset required' : 'Admin login successful',
