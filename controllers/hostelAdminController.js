@@ -469,15 +469,11 @@ exports.createHostel = async (req, res) => {
       foodMenuDescription: payload.foodMenuDescription || (foodItems.length ? foodItems.map(item => `${item.name}: ${item.daysServing.join(', ')}`).join(' | ') : ''),
       facilities: normalizedFacilities,
       images,
-      isApproved: isExplicitlyVerified,
-      isPending: !isExplicitlyVerified,
-      isVerified: isExplicitlyVerified,
-      isLive: isExplicitlyVerified,
-      isActive: true,
+      isApproved: true,
+      isVerified: false,
+      isLive: true,
       verificationStatus: {
-        status: isExplicitlyVerified ? 'verified' : 'pending',
-        verifiedBy: isExplicitlyVerified ? actor._id : undefined,
-        verificationDate: isExplicitlyVerified ? new Date() : undefined
+        status: 'pending'
       }
     });
 
@@ -674,7 +670,7 @@ exports.getHostelById = async (req, res) => {
 
 exports.getPendingHostels = async (req, res) => {
   try {
-    const hostels = await Hostel.find({ isPending: true }).populate('owner', 'firstName lastName email phone').sort('-createdAt');
+    const hostels = await Hostel.find({ 'verificationStatus.status': 'pending' }).populate('owner', 'firstName lastName email phone').sort('-createdAt');
     res.status(200).json({ success: true, count: hostels.length, hostels });
   } catch (error) {
     logger.error('Get pending hostels error:', error);
@@ -699,7 +695,7 @@ exports.updateHostel = async (req, res) => {
     ]);
     const adminOnlyUpdatable = new Set([
       'hostelCode', 'rank', 'isSponsored', 'isSponsorFeatured', 'sponsorPackage', 'isApproved', 'isVerified',
-      'isLive', 'isPending', 'verificationStatus', 'isActive', 'expiryDate', 'activeDate', 'isDeleted',
+      'isLive', 'verificationStatus', 'expiryDate', 'activeDate', 'isDeleted',
       'sponsorExpiresAt', 'verificationStatus.status', 'verificationStatus.verifiedBy', 'verificationStatus.verificationDate', 'verificationStatus.rejectionReason'
     ]);
     const blockedFields = new Set(['_id', 'id', 'hostelCode', '__v', 'createdAt', 'updatedAt']);
@@ -882,19 +878,15 @@ exports.verifyHostel = async (req, res) => {
     if (status === 'verified') {
       hostel.verificationStatus = { status: 'verified', verifiedBy: req.user._id, verificationDate: new Date() };
       hostel.isApproved = true;
-      hostel.isPending = false;
       hostel.isLive = true;
       hostel.isVerified = true;
-      hostel.isActive = true;
       hostel.activeDate = hostel.activeDate || new Date();
       if (hostel.owner?.email) await sendTemplateEmail(hostel.owner.email, emailTemplates.hostelVerified(hostel.owner.firstName || hostel.owner.email, hostel.name, hostel.hostelCode));
     } else {
       hostel.verificationStatus = { status: 'rejected', verifiedBy: req.user._id, verificationDate: new Date(), rejectionReason };
-      hostel.isPending = false;
       hostel.isApproved = false;
       hostel.isLive = false;
       hostel.isVerified = false;
-      hostel.isActive = false;
       if (hostel.owner?.email) await sendTemplateEmail(hostel.owner.email, emailTemplates.hostelRejected(hostel.owner.firstName || hostel.owner.email, hostel.name, rejectionReason || 'No reason provided'));
     }
 
@@ -1107,7 +1099,6 @@ exports.activateHostel = async (req, res) => {
     const hostel = await Hostel.findById(req.params.hostelId);
     if (!hostel) return res.status(404).json({ success: false, message: 'Hostel not found' });
     if (!isAdminRole(req.user.role)) return res.status(403).json({ success: false, message: 'Only admins can activate hostels' });
-    hostel.isActive = true;
     hostel.activeDate = new Date();
     hostel.isLive = true;
     await hostel.save();
@@ -1123,7 +1114,6 @@ exports.deactivateHostel = async (req, res) => {
     const hostel = await Hostel.findById(req.params.hostelId);
     if (!hostel) return res.status(404).json({ success: false, message: 'Hostel not found' });
     if (!isAdminRole(req.user.role)) return res.status(403).json({ success: false, message: 'Only admins can deactivate hostels' });
-    hostel.isActive = false;
     hostel.isLive = false;
     await hostel.save();
     res.status(200).json({ success: true, message: 'Hostel deactivated successfully', hostel });
@@ -1241,11 +1231,9 @@ exports.associateHostelToUser = async (req, res) => {
     await user.save();
 
     hostel.owner = user._id;
-    hostel.isPending = false;
     hostel.isApproved = true;
     hostel.isLive = true;
     hostel.isVerified = true;
-    hostel.isActive = true;
     hostel.verificationStatus = { status: 'verified', verifiedBy: req.user._id, verificationDate: new Date() };
     await hostel.save();
     res.status(200).json({ success: true, message: 'Hostel associated with owner successfully', hostel, user });
@@ -1273,7 +1261,7 @@ exports.bulkUpdateHostels = async (req, res) => {
     if (!Array.isArray(hostelIds) || !hostelIds.length) return res.status(400).json({ success: false, message: 'hostelIds array is required' });
     if (!isAdminRole(req.user.role)) return res.status(403).json({ success: false, message: 'Only admins can bulk update hostels' });
 
-    const allowedFields = ['rank', 'isActive', 'isSponsored', 'isSponsorFeatured', 'sponsorPackage', 'isApproved', 'isPending', 'isVerified', 'isLive', 'expiryDate', 'verificationStatus'];
+    const allowedFields = ['rank', 'isSponsored', 'isSponsorFeatured', 'sponsorPackage', 'isApproved', 'isVerified', 'isLive', 'expiryDate', 'verificationStatus'];
     const payload = {};
     Object.entries(updates || {}).forEach(([key, value]) => {
       if (allowedFields.includes(key)) payload[key] = value;

@@ -351,9 +351,9 @@ exports.createUserAccount = async (req, res) => {
           return res.status(400).json({ success: false, message: 'This hostel code already belongs to an owner.' });
         }
         hostel.owner = user._id;
-        hostel.isPending = false;
         hostel.isApproved = true;
         hostel.isLive = true;
+        hostel.isVerified = true;
         hostel.verificationStatus = { status: 'verified', verifiedBy: actor._id, verificationDate: new Date() };
         await hostel.save();
         user.associatedHostels = user.associatedHostels || [];

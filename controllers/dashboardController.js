@@ -45,7 +45,7 @@ exports.getDashboardStats = async (req, res) => {
       totalUsers: await User.countDocuments(),
       totalHostels: await Hostel.countDocuments(),
       totalBookings: await Booking.countDocuments(),
-      pendingHostels: await Hostel.countDocuments({ isPending: true }),
+      pendingHostels: await Hostel.countDocuments({ 'verificationStatus.status': 'pending' }),
       pendingBookings: await Booking.countDocuments({ status: 'pending' }),
       verifiedHostels: await Hostel.countDocuments({ isApproved: true })
     };
