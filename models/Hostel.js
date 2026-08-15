@@ -64,7 +64,7 @@ const hostelSchema = new mongoose.Schema({
   isVerified: { type: Boolean, default: false },
   isLive: { type: Boolean, default: true },
   isApproved: { type: Boolean, default: true },
-  isPending: { type: Boolean, default: true },
+  isPending: { type: Boolean, default: false },
 
   isSponsored: { type: Boolean, default: false },
   isSponsorFeatured: { type: Boolean, default: false },
