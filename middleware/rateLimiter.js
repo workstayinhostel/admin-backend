@@ -63,7 +63,7 @@ const createRateLimiter = ({ name, max, windowMs, getIdentifier }) => {
 
 const loginLimiter = createRateLimiter({
   name: 'login',
-  max: 4,
+  max: 6,
   windowMs: 60 * 60 * 1000,
   getIdentifier: (req) => req.body?.email || req.query?.email || req.headers['x-user-email'] || req.user?.email
 });
@@ -77,7 +77,7 @@ const forgotPasswordLimiter = createRateLimiter({
 
 const resetPasswordLimiter = createRateLimiter({
   name: 'reset_password',
-  max: 3,
+  max: 4,
   windowMs: 60 * 60 * 1000,
   getIdentifier: (req) => req.body?.email || req.body?.emailAddress || req.query?.email || req.headers['x-user-email']
 });
