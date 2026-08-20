@@ -62,31 +62,34 @@ const extractCoordinatesFromGoogleMaps = async (link) => {
 
   // Mobile Maps pages often keep coordinates in URL-encoded !2d/!3d markers
   // in the response body instead of putting them in the final URL.
-  const searchableText = `${targetUrl}\n${responseBody}`.replace(/%21/g, '!').replace(/%2C/gi, ',');
   const patterns = [
-    { regex: /[?&](?:q|query|ll|center)=(-?\d{1,3}(?:\.\d+)?),\s*(-?\d{1,3}(?:\.\d+)?)/i, order: 'lat-lng' },
-    { regex: /@(-?\d{1,3}(?:\.\d+)?),\s*(-?\d{1,3}(?:\.\d+)?)(?:,[-\d.]+)?(?:[/?#]|$)/i, order: 'lat-lng' },
     { regex: /!3d(-?\d{1,3}(?:\.\d+)?)!4d(-?\d{1,3}(?:\.\d+)?)/i, order: 'lat-lng' },
     { regex: /!2d(-?\d{1,3}(?:\.\d+)?)(?:![^!]+)*?!3d(-?\d{1,3}(?:\.\d+)?)/i, order: 'lng-lat' },
     { regex: /!3d(-?\d{1,3}(?:\.\d+)?)(?:![^!]+)*?!2d(-?\d{1,3}(?:\.\d+)?)/i, order: 'lat-lng' },
+    { regex: /[?&](?:q|query|ll|center)=(-?\d{1,3}(?:\.\d+)?),\s*(-?\d{1,3}(?:\.\d+)?)/i, order: 'lat-lng' },
+    { regex: /@(-?\d{1,3}(?:\.\d+)?),\s*(-?\d{1,3}(?:\.\d+)?)(?:,[-\d.]+)?(?:[/?#]|$)/i, order: 'lat-lng' },
     { regex: /(?:lat|latitude)[=,:](-?\d{1,3}(?:\.\d+)?)[^\d-]*?(?:lng|lon|longitude)[=,:](-?\d{1,3}(?:\.\d+)?)/i, order: 'lat-lng' }
   ];
 
-  for (const { regex, order } of patterns) {
-    const match = searchableText.match(regex);
-    if (!match) continue;
+  for (const searchableText of [targetUrl, responseBody]) {
+    const normalizedText = searchableText.replace(/%21/g, '!').replace(/%2C/gi, ',');
 
-    const lat = Number(order === 'lng-lat' ? match[2] : match[1]);
-    const lng = Number(order === 'lng-lat' ? match[1] : match[2] || match[1]);
+    for (const { regex, order } of patterns) {
+      const match = normalizedText.match(regex);
+      if (!match) continue;
 
-    if (
-      Number.isFinite(lat) &&
-      Number.isFinite(lng) &&
-      lat >= -90 && lat <= 90 &&
-      lng >= -180 && lng <= 180
-    ) {
-      // GeoJSON expects [longitude, latitude]
-      return [lng, lat];
+      const lat = Number(order === 'lng-lat' ? match[2] : match[1]);
+      const lng = Number(order === 'lng-lat' ? match[1] : match[2] || match[1]);
+
+      if (
+        Number.isFinite(lat) &&
+        Number.isFinite(lng) &&
+        lat >= -90 && lat <= 90 &&
+        lng >= -180 && lng <= 180
+      ) {
+        // GeoJSON expects [longitude, latitude]
+        return [lng, lat];
+      }
     }
   }
 
@@ -439,12 +442,13 @@ exports.createHostel = async (req, res) => {
 
     const location = payload.location || {};
     const mapLink = location.googleMapLink || payload.googleMapLink || '';
-    
-    // Await the asynchronous short-link extraction
     const suppliedCoordinates = location.coordinates?.coordinates;
-    const coordinates = hasValidCoordinates(suppliedCoordinates)
-      ? suppliedCoordinates.map(Number)
-      : await extractCoordinatesFromGoogleMaps(mapLink);
+    const extractedCoordinates = await extractCoordinatesFromGoogleMaps(mapLink);
+    const coordinates = hasValidCoordinates(extractedCoordinates)
+      ? extractedCoordinates
+      : hasValidCoordinates(suppliedCoordinates)
+        ? suppliedCoordinates.map(Number)
+        : [0, 0];
 
     const normalizedRoomTypes = Array.isArray(payload.roomTypes) ? payload.roomTypes.map(item => ({
       roomType: item.roomType || item.name || 'Room',
@@ -721,15 +725,17 @@ exports.updateHostel = async (req, res) => {
 
     const handleLocationUpdate = async (locationValue) => {
       const incomingLoc = locationValue || {};
+      let mapCoordinatesApplied = false;
       if (incomingLoc.addressText) hostel.location.addressText = incomingLoc.addressText;
       if (incomingLoc.googleMapLink) {
         hostel.location.googleMapLink = incomingLoc.googleMapLink;
         const resolvedCoords = await extractCoordinatesFromGoogleMaps(incomingLoc.googleMapLink);
         if (resolvedCoords[0] !== 0 || resolvedCoords[1] !== 0) {
           hostel.location.coordinates = { type: 'Point', coordinates: resolvedCoords };
+          mapCoordinatesApplied = true;
         }
       }
-      if (incomingLoc.coordinates && hasValidCoordinates(incomingLoc.coordinates.coordinates)) {
+      if (!mapCoordinatesApplied && incomingLoc.coordinates && hasValidCoordinates(incomingLoc.coordinates.coordinates)) {
         hostel.location.coordinates = { type: 'Point', coordinates: incomingLoc.coordinates.coordinates.map(Number) };
       }
     };
