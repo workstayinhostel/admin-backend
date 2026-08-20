@@ -38,6 +38,7 @@ const extractCoordinatesFromGoogleMaps = async (link) => {
 
   let targetUrl = String(link).trim();
   if (!targetUrl) return [0, 0];
+  let responseBody = '';
 
   const isShortGoogleLink = /(?:maps\.app\.goo\.gl|goo\.gl\/maps)/i.test(targetUrl);
 
@@ -53,24 +54,30 @@ const extractCoordinatesFromGoogleMaps = async (link) => {
       });
 
       targetUrl = response.request?.res?.responseUrl || response.request?.responseUrl || targetUrl;
+      responseBody = typeof response.data === 'string' ? response.data : '';
     } catch (error) {
       logger.warn(`Unable to resolve shortened Google Maps link: ${error.message}`);
     }
   }
 
+  // Mobile Maps pages often keep coordinates in URL-encoded !2d/!3d markers
+  // in the response body instead of putting them in the final URL.
+  const searchableText = `${targetUrl}\n${responseBody}`.replace(/%21/g, '!').replace(/%2C/gi, ',');
   const patterns = [
-    /[?&](?:q|query|ll|center)=(-?\d{1,3}(?:\.\d+)?),\s*(-?\d{1,3}(?:\.\d+)?)/i,
-    /@(-?\d{1,3}(?:\.\d+)?),\s*(-?\d{1,3}(?:\.\d+)?)(?:,[-\d.]+)?(?:[/?#]|$)/i,
-    /!3d(-?\d{1,3}(?:\.\d+)?)!4d(-?\d{1,3}(?:\.\d+)?)/i,
-    /(?:lat|latitude)[=,:](-?\d{1,3}(?:\.\d+)?)[^\d-]*?(?:lng|lon|longitude)[=,:](-?\d{1,3}(?:\.\d+)?)/i
+    { regex: /[?&](?:q|query|ll|center)=(-?\d{1,3}(?:\.\d+)?),\s*(-?\d{1,3}(?:\.\d+)?)/i, order: 'lat-lng' },
+    { regex: /@(-?\d{1,3}(?:\.\d+)?),\s*(-?\d{1,3}(?:\.\d+)?)(?:,[-\d.]+)?(?:[/?#]|$)/i, order: 'lat-lng' },
+    { regex: /!3d(-?\d{1,3}(?:\.\d+)?)!4d(-?\d{1,3}(?:\.\d+)?)/i, order: 'lat-lng' },
+    { regex: /!2d(-?\d{1,3}(?:\.\d+)?)(?:![^!]+)*?!3d(-?\d{1,3}(?:\.\d+)?)/i, order: 'lng-lat' },
+    { regex: /!3d(-?\d{1,3}(?:\.\d+)?)(?:![^!]+)*?!2d(-?\d{1,3}(?:\.\d+)?)/i, order: 'lat-lng' },
+    { regex: /(?:lat|latitude)[=,:](-?\d{1,3}(?:\.\d+)?)[^\d-]*?(?:lng|lon|longitude)[=,:](-?\d{1,3}(?:\.\d+)?)/i, order: 'lat-lng' }
   ];
 
-  for (const pattern of patterns) {
-    const match = targetUrl.match(pattern);
+  for (const { regex, order } of patterns) {
+    const match = searchableText.match(regex);
     if (!match) continue;
 
-    const lat = Number(match[1]);
-    const lng = Number(match[2] || match[1]);
+    const lat = Number(order === 'lng-lat' ? match[2] : match[1]);
+    const lng = Number(order === 'lng-lat' ? match[1] : match[2] || match[1]);
 
     if (
       Number.isFinite(lat) &&
@@ -84,6 +91,16 @@ const extractCoordinatesFromGoogleMaps = async (link) => {
   }
 
   return [0, 0];
+};
+
+const hasValidCoordinates = (coordinates) => {
+  if (!Array.isArray(coordinates) || coordinates.length !== 2) return false;
+
+  const [longitude, latitude] = coordinates.map(Number);
+  return Number.isFinite(longitude) && Number.isFinite(latitude) &&
+    (longitude !== 0 || latitude !== 0) &&
+    longitude >= -180 && longitude <= 180 &&
+    latitude >= -90 && latitude <= 90;
 };
 
 const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -424,8 +441,9 @@ exports.createHostel = async (req, res) => {
     const mapLink = location.googleMapLink || payload.googleMapLink || '';
     
     // Await the asynchronous short-link extraction
-    const coordinates = Array.isArray(location.coordinates?.coordinates) && location.coordinates.coordinates.length === 2
-      ? location.coordinates.coordinates.map(Number)
+    const suppliedCoordinates = location.coordinates?.coordinates;
+    const coordinates = hasValidCoordinates(suppliedCoordinates)
+      ? suppliedCoordinates.map(Number)
       : await extractCoordinatesFromGoogleMaps(mapLink);
 
     const normalizedRoomTypes = Array.isArray(payload.roomTypes) ? payload.roomTypes.map(item => ({
@@ -670,7 +688,7 @@ exports.getHostelById = async (req, res) => {
 
 exports.getPendingHostels = async (req, res) => {
   try {
-    const hostels = await Hostel.find({ 'verificationStatus.status': 'pending' }).populate('owner', 'firstName lastName email phone').sort('-createdAt');
+    const hostels = await Hostel.find({ isApproved: false }).populate('owner', 'firstName lastName email phone').sort('-createdAt');
     res.status(200).json({ success: true, count: hostels.length, hostels });
   } catch (error) {
     logger.error('Get pending hostels error:', error);
@@ -711,7 +729,7 @@ exports.updateHostel = async (req, res) => {
           hostel.location.coordinates = { type: 'Point', coordinates: resolvedCoords };
         }
       }
-      if (incomingLoc.coordinates && Array.isArray(incomingLoc.coordinates.coordinates) && incomingLoc.coordinates.coordinates.length === 2) {
+      if (incomingLoc.coordinates && hasValidCoordinates(incomingLoc.coordinates.coordinates)) {
         hostel.location.coordinates = { type: 'Point', coordinates: incomingLoc.coordinates.coordinates.map(Number) };
       }
     };
