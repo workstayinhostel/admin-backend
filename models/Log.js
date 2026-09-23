@@ -30,6 +30,7 @@ const LogSchema = new mongoose.Schema({
       'user_activated',
       'user_deactivated',
       'user_merged',
+      'user_unmerged',
       'user_role_changed',
       'rating_created',
       'rating_updated',
@@ -40,7 +41,14 @@ const LogSchema = new mongoose.Schema({
       'email_verification',
       'account_verification',
       'admin_user_creation',
-      'user_login'
+      'user_login',
+      'submission_approved',
+      'submission_rejected',
+      'subscriber_deleted',
+      'support_status_changed',
+      'support_message_deleted',
+      'visit_deleted',
+      'user_force_password_reset'
     ],
     required: true
   },
@@ -48,7 +56,7 @@ const LogSchema = new mongoose.Schema({
   // Resource Information
   resourceType: {
     type: String,
-    enum: ['user', 'hostel', 'booking', 'rating', 'admin', 'system'],
+    enum: ['user', 'hostel', 'booking', 'rating', 'admin', 'system', 'submittedHostel', 'subscriber', 'supportMessage', 'visit'],
     required: true
   },
   resourceId: mongoose.Schema.Types.ObjectId,

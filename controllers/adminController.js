@@ -296,7 +296,7 @@ exports.resetPassword = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Passwords do not match or missing' });
     }
 
-    const user = await User.findOne({ resetPasswordToken: normalizedToken, resetPasswordExpiry: { $gt: new Date() } });
+    const user = await User.findOne({ resetPasswordToken: normalizedToken, resetPasswordExpiry: { $gt: new Date() } }).select('+resetPasswordToken +resetPasswordExpiry');
     if (!user) return res.status(400).json({ success: false, message: 'Invalid or expired reset token' });
 
     user.password = password;

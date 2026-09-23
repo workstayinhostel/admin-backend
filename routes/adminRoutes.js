@@ -3,6 +3,8 @@ const authController = require('../controllers/authController');
 const hostelAdminController = require('../controllers/hostelAdminController');
 const userAdminController = require('../controllers/userAdminController');
 const dashboardController = require('../controllers/dashboardController');
+const adminDataController = require('../controllers/adminDataController');
+const analyticsDashboardController = require('../controllers/analyticsDashboardController');
 const { protect, authorize, isAdminLevel, isFounder, checkPasswordChange } = require('../middleware/auth');
 
 const { loginLimiter, forgotPasswordLimiter, resetPasswordLimiter } = require('../middleware/rateLimiter');
@@ -31,6 +33,31 @@ router.post('/create-admin', authorize('founder', 'superadmin'), authController.
 router.post('/create-user', isAdminLevel, userAdminController.createUserAccount);
 router.get('/users', isAdminLevel, userAdminController.getUsers);
 router.put('/users/:userId', isAdminLevel, userAdminController.updateUser);
+router.get('/users/:userId', isAdminLevel, userAdminController.getUser);
+router.patch('/users/:userId', isAdminLevel, userAdminController.updateUserProfile);
+router.patch('/users/:userId/role', isAdminLevel, userAdminController.changeUserRole);
+router.patch('/users/:userId/active', isAdminLevel, userAdminController.setUserActive);
+router.post('/users/:userId/force-password-reset', isAdminLevel, userAdminController.forcePasswordReset);
+
+// Shared public-backend collections
+router.get('/submitted-hostels', isAdminLevel, adminDataController.listSubmissions);
+router.get('/submitted-hostels/:id', isAdminLevel, adminDataController.getSubmission);
+router.post('/submitted-hostels/:id/approve', isAdminLevel, adminDataController.approveSubmission);
+router.post('/submitted-hostels/:id/reject', isAdminLevel, adminDataController.rejectSubmission);
+router.get('/subscribers/export', authorize('admin', 'superadmin', 'founder'), adminDataController.exportSubscribers);
+router.get('/subscribers', isAdminLevel, adminDataController.listSubscribers);
+router.get('/subscribers/:id', isAdminLevel, adminDataController.getSubscriber);
+router.delete('/subscribers/:id', authorize('superadmin', 'founder'), adminDataController.deleteSubscriber);
+router.get('/support-messages', isAdminLevel, adminDataController.listSupportMessages);
+router.get('/support-messages/:id', isAdminLevel, adminDataController.getSupportMessage);
+router.patch('/support-messages/:id/status', isAdminLevel, adminDataController.updateSupportStatus);
+router.delete('/support-messages/:id', authorize('superadmin', 'founder'), adminDataController.deleteSupportMessage);
+router.get('/bookings', isAdminLevel, adminDataController.listBookings);
+router.get('/analytics-dashboard', isAdminLevel, analyticsDashboardController.getAnalyticsDashboard);
+router.get('/visits/summary', isAdminLevel, adminDataController.getVisitSummary);
+router.get('/visits', isAdminLevel, adminDataController.listVisits);
+router.get('/visits/:id', isAdminLevel, adminDataController.getVisit);
+router.delete('/visits/:id', authorize('superadmin', 'founder'), adminDataController.deleteVisit);
 
 // Hostel verification and management
 router.post('/verify-hostel/:hostelId', isAdminLevel, hostelAdminController.verifyHostel);
@@ -63,6 +90,10 @@ router.put('/deactivate-user/:userId', isAdminLevel, userAdminController.deactiv
 router.put('/activate-user/:userId', isAdminLevel, userAdminController.activateUser);
 router.post('/merge-student', isAdminLevel, hostelAdminController.assignHostelOwner);
 router.post('/assign-hostel-owner', isAdminLevel, hostelAdminController.assignHostelOwner);
+router.post('/hostel-owner/preview', isAdminLevel, hostelAdminController.previewHostelOwnerMerge);
+router.post('/hostel-owner/merge', isAdminLevel, hostelAdminController.confirmHostelOwnerMerge);
+router.post('/hostel-owner/demerge/preview', isAdminLevel, hostelAdminController.previewHostelOwnerDemerge);
+router.post('/hostel-owner/demerge', isAdminLevel, hostelAdminController.demergeHostelOwner);
 router.get('/lookup-user', isAdminLevel, hostelAdminController.lookupUserByEmail);
 
 // System logs and stats

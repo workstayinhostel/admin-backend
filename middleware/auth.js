@@ -25,6 +25,10 @@ const protect = async (req, res, next) => {
       });
     }
 
+    if (decoded.tokenVersion !== undefined && decoded.tokenVersion !== (user.tokenVersion || 0)) {
+      return res.status(401).json({ success: false, message: 'Your session has expired. Please log in again.' });
+    }
+
     const incomingTokenHash = user.getSessionTokenHash(token);
     if (user.activeSessionToken && user.activeSessionToken !== incomingTokenHash) {
       return res.status(401).json({

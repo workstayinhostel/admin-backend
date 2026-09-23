@@ -89,5 +89,8 @@ const hostelSchema = new mongoose.Schema({
 // Indexes for query performance and geospatial searches
 hostelSchema.index({ name: 1, 'location.addressText': 1 });
 hostelSchema.index({ 'location.coordinates': '2dsphere' });
+hostelSchema.index({ type: 1, rank: -1 });
+hostelSchema.index({ type: 1, createdAt: -1 });
+hostelSchema.index({ type: 1, isLive: 1, rank: -1 });
 
 module.exports = mongoose.model('Hostel', hostelSchema);

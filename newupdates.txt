@@ -1,0 +1,297 @@
+# Admin Backend Model and Controller Guide
+
+This document is the handoff contract for an admin backend that shares the
+MongoDB collections used by the public backend.
+
+## Important Rules
+
+- Use the same MongoDB database and collection names listed below.
+- Protect every admin route with JWT authentication and role authorization.
+- Allowed admin roles in the public backend are `admin`, `superadmin`, and
+  `founder`. Keep destructive actions restricted to `superadmin` or `founder`.
+- Never select, return, log, or expose `User.password`, OTP values, reset
+  tokens, or reset-token expiry fields.
+- Write a `Log` document for every create, update, delete, approve, reject,
+  publish, unpublish, activation, deactivation, and role-change action.
+- Use pagination for every list endpoint. Suggested defaults: `page=1`,
+  `limit=20`, maximum `limit=100`.
+- Return a consistent response shape:
+
+```json
+{
+  "success": true,
+  "message": "...",
+  "data": {},
+  "pagination": { "page": 1, "limit": 20, "total": 0, "pages": 0 }
+}
+```
+
+## Collections and Models
+
+### 1. `SubmittedHostel` -> `submitted-hostels`
+
+This is the public hostel-submission queue. It is not a live hostel listing.
+
+| Field | Type | Rules |
+|---|---|---|
+| `_id` | ObjectId | Primary key |
+| `hostelName` | String | Required, 5-100 chars |
+| `address` | String | Required, 5-300 chars |
+| `mapLink` | String | Required URL/string, max 2048 chars |
+| `whatsapp` | String | Required, max 16 chars; public code normalizes separators |
+| `listerEmail` | String | Required, lowercase email |
+| `type` | String | `boys`, `girls`, or `pg` |
+| `createdAt`, `updatedAt` | Date | Mongoose timestamps |
+
+**Admin controller actions**
+
+- `listSubmissions`: filter by `type`, `listerEmail`, date range, and text;
+  sort newest first; paginate.
+- `getSubmission`: return one complete submission.
+- `approveSubmission`: validate missing live-hostel information, create a
+  `Hostel`, record the admin and timestamp in `Log`, then remove or archive
+  the submission. Do not approve directly into the public listing without
+  collecting the full `Hostel` fields below.
+- `rejectSubmission`: because the current schema has no status or rejection
+  fields, either delete only after recording a log, or add an admin-owned
+  workflow collection/fields such as `reviewStatus`, `reviewedBy`,
+  `reviewedAt`, and `rejectionReason` in both services.
+
+**Important:** the current public schema cannot show `pending`, `approved`, or
+`rejected` status. The admin backend must not pretend that status exists.
+
+### 2. `Subscriber` -> `subscribed`
+
+| Field | Type | Rules |
+|---|---|---|
+| `_id` | ObjectId | Primary key |
+| `email` | String | Required, lowercase, unique, valid email |
+| `createdAt`, `updatedAt` | Date | Timestamps; indexed newest first |
+
+**Admin controller actions**
+
+- `listSubscribers`: search by email, date filter, pagination, newest first.
+- `getSubscriber`: return one subscriber.
+- `deleteSubscriber`: unsubscribe/delete only with confirmation and an audit
+  log. There is no `isActive` or unsubscribe timestamp in this model.
+- `exportSubscribers`: stream CSV with only email and created date; authorize
+  this separately because it is personal data.
+
+Existing public route: `GET /api/subscribe` already returns all subscribers
+to `admin`, `superadmin`, and `founder`, but the admin backend should paginate
+the collection for production use.
+
+### 3. `SupportMessage` -> `support`
+
+| Field | Type | Rules |
+|---|---|---|
+| `_id` | ObjectId | Primary key |
+| `name` | String | Required, 2-100 chars |
+| `email` | String | Required, lowercase email |
+| `topic` | String | Required, 3-120 chars |
+| `message` | String | Required, 10-5000 chars |
+| `user` | ObjectId | Required reference to `User` |
+| `status` | String | `new`, `in-progress`, or `resolved`; default `new` |
+| `createdAt`, `updatedAt` | Date | Timestamps |
+
+**Admin controller actions**
+
+- `listSupportMessages`: filter by `status`, `topic`, `email`, `user`, and
+  created-date range; populate only safe user fields.
+- `getSupportMessage`: return the full message and safe user summary.
+- `updateSupportStatus`: allow only the three enum values; log before/after.
+- `deleteSupportMessage`: restrict to `superadmin`/`founder`; audit it.
+- `replyToSupportMessage`: send email through the admin service and store the
+  reply in a separate `SupportReply` collection if conversation history is
+  required. The current model has no reply field.
+
+Existing public route: `POST /api/support/send-message` creates a message for
+the signed-in user. There is currently no public list or update route.
+
+### 4. `User` -> `users`
+
+| Field | Type | Rules |
+|---|---|---|
+| `firstName`, `lastName` | String | Required |
+| `email` | String | Required, unique, lowercase |
+| `phone` | String | Required |
+| `password` | String | Hashed, `select: false`; never return |
+| `role` | String | `student`, `hostelowner`, `agent`, `admin`, `superadmin`, `founder` |
+| `isVerified` | Boolean | Email/account verification state |
+| `isActive` | Boolean | Account access state |
+| `associatedHostels` | ObjectId[] | References `Hostel` |
+| `savedHostels` | ObjectId[] | References `Hostel` |
+| `emailNotificationsEnabled` | Boolean | Notification preference |
+| `studentInfo` | Object | `institution`, `educationLevel` |
+| `hostelOwnerInfo` | Object | `businessName` |
+| `authProvider` | String | `email` or `google` |
+| `googleId`, `profilePicture` | String | Authentication/profile data |
+| `lastPasswordChangeAt`, `lastLogin` | Date | Security/audit data |
+| `forcePasswordChange` | Boolean | Require password change |
+| `tokenVersion` | Number | Increment to revoke all JWTs |
+| `loginCount` | Number | Login metric |
+| `ipAddress` | String | Sensitive security metadata |
+| `createdAt`, `updatedAt` | Date | Timestamps |
+
+**Admin controller actions**
+
+- `listUsers`: filter by role, active/verified state, provider, and search;
+  return a safe projection only.
+- `getUser`: populate hostel names only when needed; never expose password or
+  reset fields.
+- `createUser`: validate role and hash password through the model save hook.
+- `updateUser`: update profile and preferences; prevent changing the final
+  founder account accidentally.
+- `changeUserRole`: separate endpoint, strong authorization, and audit log.
+- `setUserActive`: deactivate/reactivate; increment `tokenVersion` on
+  deactivation so existing JWTs stop working.
+- `forcePasswordReset`: set `forcePasswordChange=true` and increment token
+  version; never set a plaintext password in an admin response.
+- `deleteUser`: prefer soft deactivation. Hard delete only with a documented
+  retention policy because bookings, ratings, support, and logs reference it.
+
+### 5. `Visit` -> `visits`
+
+This is analytics data. It is deduplicated by `visitKey` per identifier per UTC
+hour, so a duplicate request is expected and is not an error.
+
+| Field | Type | Rules |
+|---|---|---|
+| `appName` | String | `stayinhostel-app` or `stayinhostel-landing` |
+| `authState` | String | `anonymous` or `authenticated` |
+| `authTokenPresent` | Boolean | Whether a token was supplied |
+| `deviceType` | String | `desktop`, `mobile`, `tablet`, `unknown` |
+| `event`, `eventType` | String | Event information |
+| `identifier` | String | Required analytics identifier |
+| `locationType` | String | Required location classification |
+| `message` | String | Optional, max 500 |
+| `operatingSystem`, `platform`, `userAgent` | String | Client metadata |
+| `pagePath`, `pageTitle`, `pageUrl`, `path` | String | Page metadata; path is required |
+| `screen`, `viewport` | Object | `{ width, height, pixelRatio }` |
+| `sessionId` | String | Optional session identifier |
+| `eventTimestamp` | Date | Client event time |
+| `userId` | ObjectId/null | Optional `User` reference |
+| `hourBucket` | Date | Required UTC hour bucket |
+| `visitKey` | String | Required and unique |
+| `createdAt`, `updatedAt` | Date | Timestamps |
+
+**Admin controller actions**
+
+- `getVisitSummary`: aggregate unique visits by day/hour, app, device,
+  location, event, and authenticated state.
+- `listVisits`: paginate raw records for investigation; filter by date range,
+  app, event, device, and user.
+- `getVisit`: inspect one record.
+- `deleteVisits`: restrict to `superadmin`/`founder`, require date/filter
+  confirmation, and log the deletion. Do not edit `visitKey` or bucket data.
+
+Do not expose raw IP-like identifiers or full user agents in ordinary dashboard
+views. Aggregate first and restrict raw analytics access.
+
+## Existing Models the Admin Backend Must Keep Compatible
+
+These models already exist in the admin backend and are referenced by the new
+models above:
+
+- **Hostel** (`hostels`): live listing. Important fields include `name`,
+  `owner`, `type`, `hostelCode`, `description`, `location`, contact details,
+  `roomTypes`, `foodItems`, `facilities`, `images`, `verificationStatus`,
+  `isVerified`, `isLive`, `isApproved`, sponsorship fields, rank, and rating
+  statistics. Use GeoJSON coordinates as `[longitude, latitude]`.
+- **Booking** (`bookings`): references `Hostel` and `User`; statuses are
+  `pending`, `contacted`, `confirmed`, `cancelled`, `completed`, and `no-show`.
+- **Rating** (`ratings`): also contains the review text. It references a
+  hostel, student, and optional booking; `overallRating` is 1-5 and publication
+  is controlled by `isPublished`.
+- **Log** (`logs`): audit record. Existing action/resource enums do not include
+  the new resources, so extend them with actions such as
+  `submission_approved`, `submission_rejected`, `subscriber_deleted`,
+  `support_status_changed`, `visit_deleted`, and resource types
+  `submittedHostel`, `subscriber`, `supportMessage`, and `visit` before using
+  those values.
+- **Otp** (`otps`): temporary registration/password-reset records. MongoDB
+  expires them after 600 seconds. Admin listing is normally unnecessary;
+  never show the `otp` or temporary `password` value.
+
+There is no separate `Review` model in this public backend. A review is the
+`Rating.review` field.
+
+## Suggested Admin Routes
+
+All routes below should use `protect` plus an admin-role middleware.
+
+```text
+GET    /api/admin/submitted-hostels
+GET    /api/admin/submitted-hostels/:id
+POST   /api/admin/submitted-hostels/:id/approve
+POST   /api/admin/submitted-hostels/:id/reject
+
+GET    /api/admin/subscribers
+GET    /api/admin/subscribers/:id
+DELETE /api/admin/subscribers/:id
+GET    /api/admin/subscribers/export
+
+GET    /api/admin/support-messages
+GET    /api/admin/support-messages/:id
+PATCH  /api/admin/support-messages/:id/status
+DELETE /api/admin/support-messages/:id
+
+GET    /api/admin/users
+GET    /api/admin/users/:id
+PATCH  /api/admin/users/:id
+PATCH  /api/admin/users/:id/role
+PATCH  /api/admin/users/:id/active
+POST   /api/admin/users/:id/force-password-reset
+
+GET    /api/admin/visits
+GET    /api/admin/visits/summary
+GET    /api/admin/visits/:id
+DELETE /api/admin/visits/:id
+```
+
+## Frontline Hospital Map Submission
+
+The supplied short URL resolves to:
+
+- **Place name:** Frontline Hospital
+- **Map coordinates:** latitude `27.7025058`, longitude `85.3384472`
+- **Map URL:** `https://maps.app.goo.gl/HoZikGbk5HCJTkWt5`
+
+This is publicly identified as a hospital, not a verified hostel. Treat it as
+a manual lead or `SubmittedHostel` review item only. Before creating a live
+`Hostel`, an admin must confirm the actual hostel name, hostel type, address,
+owner/contact details, room types and prices, facilities, images, and whether
+the business has permission to be listed. Do not copy the hospital name into a
+live hostel record without that confirmation.
+
+When the listing is confirmed, store the map point in the live `Hostel` model
+as:
+
+```json
+{
+  "location": {
+    "googleMapLink": "https://maps.app.goo.gl/HoZikGbk5HCJTkWt5",
+    "coordinates": {
+      "type": "Point",
+      "coordinates": [85.3384472, 27.7025058]
+    }
+  }
+}
+```
+
+## Approval and Audit Sequence
+
+1. Load the submission and check for duplicates by normalized name and
+   WhatsApp/contact data.
+2. Collect and validate the complete live-hostel payload.
+3. Create the `Hostel` with `verificationStatus.status = "pending"` and
+   `isLive = false` unless policy explicitly allows immediate publication.
+4. Only after verification set `isVerified`, `isApproved`, and `isLive` as
+   appropriate.
+5. Create a `Log` entry containing the admin, resource IDs, action, and safe
+   before/after values. Never put passwords, OTPs, or tokens in `changes`.
+6. Archive/delete the submission only according to the chosen retention policy.
+
+Use a MongoDB transaction for approval plus audit plus archive when the MongoDB
+deployment supports transactions. Otherwise, make the operation idempotent by
+storing the created hostel ID and checking it before retrying.

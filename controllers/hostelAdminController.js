@@ -656,13 +656,16 @@ exports.getHostels = async (req, res) => {
       sortQuery.averageRating = String(sortOrder).toLowerCase() === 'asc' ? 1 : -1;
     }
 
-    const total = await Hostel.countDocuments(query);
     const skip = (pageNumber - 1) * limitNumber;
-    const hostels = await Hostel.find(query)
-      .populate('owner', 'firstName lastName email role phone')
-      .sort(sortQuery)
-      .skip(skip)
-      .limit(limitNumber);
+    const [total, hostels] = await Promise.all([
+      Hostel.countDocuments(query),
+      Hostel.find(query)
+        .populate('owner', 'firstName lastName email role phone')
+        .sort(sortQuery)
+        .skip(skip)
+        .limit(limitNumber)
+        .lean()
+    ]);
 
     const enrichedHostels = await Promise.all(hostels.map(enrichHostelWithMetrics));
 
@@ -671,7 +674,9 @@ exports.getHostels = async (req, res) => {
       hostels: enrichedHostels,
       total,
       page: pageNumber,
-      limit: limitNumber
+      limit: limitNumber,
+      pages: Math.ceil(total / limitNumber),
+      hasMore: pageNumber * limitNumber < total
     });
   } catch (error) {
     logger.error('Get hostels error:', error);
@@ -1362,7 +1367,7 @@ exports.assignHostelOwner = async (req, res) => {
     if (!owner) return res.status(404).json({ success: false, message: 'User not found with provided identifier.' });
     if (!hostel) return res.status(404).json({ success: false, message: `Hostel not found: ${hostelReference}` });
 
-    if (['agent', 'admin', 'superadmin', 'founder'].includes(owner.role)) {
+    if (!['student', 'hostelowner'].includes(owner.role)) {
       return res.status(400).json({ success: false, message: `Validation Error: Account with role '${owner.role.toUpperCase()}' cannot be assigned as a hostel owner.` });
     }
 
@@ -1373,7 +1378,7 @@ exports.assignHostelOwner = async (req, res) => {
       return res.status(400).json({ success: false, message: errMsg });
     }
 
-    if (owner.role === 'student') owner.role = 'hostelowner';
+    owner.role = 'hostelowner';
     owner.associatedHostels = owner.associatedHostels || [];
     if (!owner.associatedHostels.includes(hostel._id)) owner.associatedHostels.push(hostel._id);
     await owner.save();
@@ -1402,6 +1407,99 @@ exports.assignHostelOwner = async (req, res) => {
 };
 
 exports.mergeStudentToHostel = exports.assignHostelOwner;
+
+const ownerPreviewFields = 'firstName lastName email phone role associatedHostels';
+const hostelPreviewFields = 'name hostelCode location phone email whatsappNumber owner';
+
+const getOwnerMergePreview = async (hostelCode, userEmail) => {
+  const normalizedCode = String(hostelCode || '').trim().toUpperCase();
+  const normalizedEmail = String(userEmail || '').trim().toLowerCase();
+  const [hostel, user] = await Promise.all([
+    Hostel.findOne({ hostelCode: normalizedCode }).select(hostelPreviewFields).populate('owner', ownerPreviewFields),
+    User.findOne({ email: normalizedEmail }).select(ownerPreviewFields)
+  ]);
+  return { hostel, user };
+};
+
+exports.previewHostelOwnerMerge = async (req, res) => {
+  try {
+    const { hostelCode, userEmail } = req.body;
+    if (!hostelCode || !userEmail) return res.status(400).json({ success: false, message: 'hostelCode and userEmail are required' });
+    const { hostel, user } = await getOwnerMergePreview(hostelCode, userEmail);
+    if (!hostel) return res.status(404).json({ success: false, message: 'Hostel not found with this hostel code' });
+    if (!user) return res.status(404).json({ success: false, message: 'User not found with this email' });
+
+    const canMerge = !hostel.owner && !['agent', 'admin', 'superadmin', 'founder'].includes(user.role);
+    return res.json({
+      success: true,
+      canMerge,
+      message: canMerge ? 'Hostel and user are ready to merge' : 'Hostel owner assignment is not allowed',
+      data: {
+        hostel: { id: hostel._id, name: hostel.name, hostelCode: hostel.hostelCode, address: hostel.location?.addressText, phone: hostel.phone, email: hostel.email, whatsappNumber: hostel.whatsappNumber },
+        user: { id: user._id, name: `${user.firstName} ${user.lastName}`.trim(), email: user.email, phone: user.phone, role: user.role },
+        existingOwner: hostel.owner || null
+      }
+    });
+  } catch (error) {
+    logger.error('Preview hostel owner merge error:', error);
+    res.status(500).json({ success: false, message: 'Error previewing hostel owner merge' });
+  }
+};
+
+exports.confirmHostelOwnerMerge = async (req, res) => {
+  const { hostelCode, userEmail, confirm } = req.body;
+  if (String(confirm).toLowerCase() !== 'true') return res.status(409).json({ success: false, message: 'Confirmation is required. Send confirm: true after reviewing the preview.' });
+  if (!hostelCode || !userEmail) return res.status(400).json({ success: false, message: 'hostelCode and userEmail are required' });
+  req.body = { ...req.body, hostelCode, ownerId: userEmail };
+  return exports.assignHostelOwner(req, res);
+};
+
+exports.previewHostelOwnerDemerge = async (req, res) => {
+  try {
+    const code = String(req.body.hostelCode || '').trim().toUpperCase();
+    if (!code) return res.status(400).json({ success: false, message: 'hostelCode is required' });
+    const hostel = await Hostel.findOne({ hostelCode: code }).select(hostelPreviewFields).populate('owner', ownerPreviewFields);
+    if (!hostel) return res.status(404).json({ success: false, message: 'Hostel not found with this hostel code' });
+    if (!hostel.owner) return res.json({ success: true, attached: false, message: 'No user is attached to this hostel', data: { hostel: { id: hostel._id, name: hostel.name, hostelCode: hostel.hostelCode, address: hostel.location?.addressText } } });
+    return res.json({
+      success: true,
+      attached: true,
+      message: 'Attached user found',
+      data: {
+        hostel: { id: hostel._id, name: hostel.name, hostelCode: hostel.hostelCode, address: hostel.location?.addressText },
+        user: { id: hostel.owner._id, name: `${hostel.owner.firstName} ${hostel.owner.lastName}`.trim(), email: hostel.owner.email, phone: hostel.owner.phone, role: hostel.owner.role }
+      }
+    });
+  } catch (error) {
+    logger.error('Preview hostel owner demerge error:', error);
+    res.status(500).json({ success: false, message: 'Error previewing hostel demerge' });
+  }
+};
+
+exports.demergeHostelOwner = async (req, res) => {
+  try {
+    const code = String(req.body.hostelCode || '').trim().toUpperCase();
+    if (!code) return res.status(400).json({ success: false, message: 'hostelCode is required' });
+    if (String(req.body.confirm).toLowerCase() !== 'true') return res.status(409).json({ success: false, message: 'Confirmation is required. Send confirm: true after reviewing the preview.' });
+
+    const hostel = await Hostel.findOne({ hostelCode: code }).populate('owner', ownerPreviewFields);
+    if (!hostel) return res.status(404).json({ success: false, message: 'Hostel not found with this hostel code' });
+    if (!hostel.owner) return res.json({ success: true, attached: false, message: 'No user is attached to this hostel' });
+
+    const owner = hostel.owner;
+    const previousRole = owner.role;
+    hostel.owner = null;
+    await hostel.save();
+    owner.associatedHostels = (owner.associatedHostels || []).filter((hostelId) => hostelId.toString() !== hostel._id.toString());
+    owner.role = 'student';
+    await owner.save();
+    await createAuditLog({ user: req.user._id, userRole: req.user.role, action: 'user_unmerged', resourceType: 'hostel', resourceId: hostel._id, resourceName: hostel.name, description: `Removed owner ${owner.email} from hostel ${hostel.name}`, changes: { before: { ownerId: owner._id, ownerEmail: owner.email }, after: { ownerId: null } }, ipAddress: req.ip, userAgent: req.get('user-agent') });
+    return res.json({ success: true, attached: false, message: 'Hostel owner removed successfully', data: { hostelId: hostel._id, hostelCode: hostel.hostelCode, removedUser: { id: owner._id, name: `${owner.firstName} ${owner.lastName}`.trim(), email: owner.email, phone: owner.phone, previousRole, role: owner.role } } });
+  } catch (error) {
+    logger.error('Demerge hostel owner error:', error);
+    res.status(500).json({ success: false, message: 'Error removing hostel owner' });
+  }
+};
 
 exports.lookupUserByEmail = async (req, res) => {
   try {

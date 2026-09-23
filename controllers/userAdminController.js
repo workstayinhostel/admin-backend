@@ -95,7 +95,7 @@ exports.createUserAccount = async (req, res) => {
       userAgent: req.get('user-agent')
     });
 
-    res.status(201).json({ success: true, message: `${roleLabel} account created successfully`, user: { id: user._id, email: user.email, role: user.role, tempPassword } });
+    res.status(201).json({ success: true, message: `${roleLabel} account created successfully`, user: { id: user._id, email: user.email, role: user.role } });
   } catch (error) {
     logger.error('Create user account error:', error);
     res.status(500).json({ success: false, message: error.message || 'Error creating account' });
@@ -104,11 +104,15 @@ exports.createUserAccount = async (req, res) => {
 
 exports.getUsers = async (req, res) => {
   try {
-    const { role, active, search } = req.query;
+    const { role, active, verified, provider, search } = req.query;
+    const page = Math.max(Number.parseInt(req.query.page, 10) || 1, 1);
+    const limit = Math.min(Math.max(Number.parseInt(req.query.limit, 10) || 20, 1), 100);
     const query = {};
 
     if (role) query.role = role;
     if (active !== undefined) query.isActive = active === 'true';
+    if (verified !== undefined) query.isVerified = verified === 'true';
+    if (provider) query.authProvider = provider;
     if (search) {
       query.$or = [
         { firstName: { $regex: search, $options: 'i' } },
@@ -117,8 +121,11 @@ exports.getUsers = async (req, res) => {
       ];
     }
 
-    const users = await User.find(query).select('-password').sort({ createdAt: -1 });
-    res.status(200).json({ success: true, count: users.length, users });
+    const [users, total] = await Promise.all([
+      User.find(query).select('firstName lastName email phone role isVerified isActive associatedHostels studentInfo hostelOwnerInfo emailNotificationsEnabled authProvider profilePicture lastPasswordChangeAt lastLogin forcePasswordChange tokenVersion loginCount createdAt updatedAt').sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit),
+      User.countDocuments(query)
+    ]);
+    res.status(200).json({ success: true, count: users.length, total, users, pagination: { page, limit, pages: Math.ceil(total / limit) } });
   } catch (error) {
     logger.error('Get users error:', error);
     res.status(500).json({ success: false, message: 'Error fetching users' });
@@ -155,6 +162,99 @@ exports.updateUser = async (req, res) => {
     logger.error('Update user error:', error);
     res.status(500).json({ success: false, message: error.message || 'Error updating user' });
   }
+};
+
+exports.getUser = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.userId)
+      .select('firstName lastName email phone role isVerified isActive associatedHostels savedHostels studentInfo hostelOwnerInfo emailNotificationsEnabled authProvider googleId profilePicture lastPasswordChangeAt lastLogin forcePasswordChange tokenVersion loginCount createdAt updatedAt')
+      .populate('associatedHostels', 'name hostelCode type');
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    res.json({ success: true, data: user });
+  } catch (error) {
+    logger.error('Get user error:', error);
+    res.status(500).json({ success: false, message: 'Error fetching user' });
+  }
+};
+
+exports.updateUserProfile = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.userId);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    const allowedFields = ['firstName', 'lastName', 'phone', 'emailNotificationsEnabled', 'studentInfo', 'hostelOwnerInfo', 'profilePicture'];
+    const before = {};
+    const fieldsChanged = [];
+    for (const field of allowedFields) {
+      if (req.body[field] !== undefined) {
+        before[field] = user[field];
+        user[field] = req.body[field];
+        fieldsChanged.push(field);
+      }
+    }
+    if (req.body.email !== undefined) {
+      before.email = user.email;
+      user.email = String(req.body.email).trim().toLowerCase();
+      fieldsChanged.push('email');
+    }
+    if (!fieldsChanged.length) return res.status(400).json({ success: false, message: 'No editable fields supplied' });
+    await user.save();
+    await createAuditLog({ user: req.user._id, userRole: req.user.role, action: 'user_updated', resourceType: 'user', resourceId: user._id, description: `Updated user ${user.email}`, changes: { before, after: Object.fromEntries(fieldsChanged.map((field) => [field, user[field]])), fieldsChanged }, ipAddress: req.ip, userAgent: req.get('user-agent') });
+    res.json({ success: true, message: 'User updated successfully', data: user.toJSON() });
+  } catch (error) {
+    logger.error('Update user profile error:', error);
+    res.status(500).json({ success: false, message: error.message || 'Error updating user' });
+  }
+};
+
+exports.changeUserRole = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.userId);
+    const targetRole = req.body.role;
+    const hierarchy = { student: 1, hostelowner: 2, agent: 3, admin: 4, superadmin: 5, founder: 6 };
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    if (!Object.prototype.hasOwnProperty.call(hierarchy, targetRole)) return res.status(400).json({ success: false, message: 'Invalid user role' });
+    if (user.role === 'founder' || targetRole === 'founder') return res.status(403).json({ success: false, message: 'Founder role cannot be changed through this endpoint' });
+    if ((hierarchy[targetRole] || 0) >= (hierarchy[req.user.role] || 0)) return res.status(403).json({ success: false, message: 'You cannot assign a role at or above your own level' });
+    const before = user.role;
+    user.role = targetRole;
+    user.tokenVersion = (user.tokenVersion || 0) + 1;
+    user.activeSessionToken = null;
+    await user.save();
+    await createAuditLog({ user: req.user._id, userRole: req.user.role, action: 'user_role_changed', resourceType: 'user', resourceId: user._id, description: `Changed role from ${before} to ${targetRole}`, changes: { before: { role: before }, after: { role: targetRole } }, ipAddress: req.ip, userAgent: req.get('user-agent') });
+    res.json({ success: true, message: 'User role changed successfully', data: { id: user._id, role: user.role } });
+  } catch (error) { res.status(500).json({ success: false, message: 'Error changing user role' }); }
+};
+
+exports.setUserActive = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.userId);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    if (user.role === 'founder') return res.status(403).json({ success: false, message: 'Cannot change founder account status' });
+    const isActive = req.body.isActive;
+    if (typeof isActive !== 'boolean') return res.status(400).json({ success: false, message: 'isActive must be boolean' });
+    user.isActive = isActive;
+    if (!isActive) {
+      user.tokenVersion = (user.tokenVersion || 0) + 1;
+      user.activeSessionToken = null;
+    }
+    await user.save();
+    await createAuditLog({ user: req.user._id, userRole: req.user.role, action: isActive ? 'user_activated' : 'user_deactivated', resourceType: 'user', resourceId: user._id, description: `${isActive ? 'Activated' : 'Deactivated'} user ${user.email}`, ipAddress: req.ip, userAgent: req.get('user-agent') });
+    res.json({ success: true, message: `User ${isActive ? 'activated' : 'deactivated'} successfully`, data: { id: user._id, isActive: user.isActive } });
+  } catch (error) { res.status(500).json({ success: false, message: 'Error changing user status' }); }
+};
+
+exports.forcePasswordReset = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.userId);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    if (user.role === 'founder' && req.user.role !== 'founder') return res.status(403).json({ success: false, message: 'Only founder can reset founder access' });
+    user.forcePasswordChange = true;
+    user.tokenVersion = (user.tokenVersion || 0) + 1;
+    user.activeSessionToken = null;
+    await user.save();
+    await createAuditLog({ user: req.user._id, userRole: req.user.role, action: 'user_force_password_reset', resourceType: 'user', resourceId: user._id, description: `Forced password reset for ${user.email}`, ipAddress: req.ip, userAgent: req.get('user-agent') });
+    res.json({ success: true, message: 'Password reset required on next login' });
+  } catch (error) { res.status(500).json({ success: false, message: 'Error forcing password reset' }); }
 };
 
 exports.deleteUser = async (req, res) => {
@@ -237,6 +337,8 @@ exports.deactivateUser = async (req, res) => {
     user.isActive = false;
     user.isVerified = false;
     user.forcePasswordChange = false;
+    user.tokenVersion = (user.tokenVersion || 0) + 1;
+    user.activeSessionToken = null;
     await user.save();
 
     await createAuditLog({

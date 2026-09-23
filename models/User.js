@@ -15,19 +15,26 @@ const userSchema = new mongoose.Schema({
   isVerified: { type: Boolean, default: false },
   isActive: { type: Boolean, default: true },
   associatedHostels: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Hostel' }],
+  savedHostels: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Hostel' }],
   studentInfo: {
     institution: String,
     educationLevel: String
   },
+  hostelOwnerInfo: { businessName: String },
+  emailNotificationsEnabled: { type: Boolean, default: true },
+  authProvider: { type: String, enum: ['email', 'google'], default: 'email' },
+  googleId: String,
+  profilePicture: String,
   // Token fields (OTPs are now handled via the Otp model collection)
-  resetPasswordToken: String,
-  resetPasswordExpiry: Date,
+  resetPasswordToken: { type: String, select: false },
+  resetPasswordExpiry: { type: Date, select: false },
   lastPasswordChangeAt: Date,
   forcePasswordChange: Boolean,
   activeSessionToken: { type: String, default: null },
   lastLogin: Date,
   loginCount: Number,
-  ipAddress: String
+  ipAddress: String,
+  tokenVersion: { type: Number, default: 0 }
 }, { 
   timestamps: true,
   collection: 'users' 
@@ -55,7 +62,7 @@ userSchema.methods.matchPassword = async function (enteredPassword) {
 // JWT Token generator
 userSchema.methods.getSignedJwtToken = function () {
   const jwt = require('jsonwebtoken');
-  return jwt.sign({ id: this._id, role: this.role }, process.env.JWT_SECRET || 'fallback_secret', {
+  return jwt.sign({ id: this._id, role: this.role, tokenVersion: this.tokenVersion || 0 }, process.env.JWT_SECRET || 'fallback_secret', {
     expiresIn: process.env.JWT_EXPIRE || '24h'
   });
 };
