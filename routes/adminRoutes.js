@@ -5,6 +5,7 @@ const userAdminController = require('../controllers/userAdminController');
 const dashboardController = require('../controllers/dashboardController');
 const adminDataController = require('../controllers/adminDataController');
 const analyticsDashboardController = require('../controllers/analyticsDashboardController');
+const emailController = require('../controllers/emailController');
 const { protect, authorize, isAdminLevel, isFounder, checkPasswordChange } = require('../middleware/auth');
 
 const { loginLimiter, forgotPasswordLimiter, resetPasswordLimiter } = require('../middleware/rateLimiter');
@@ -31,6 +32,8 @@ router.use(checkPasswordChange);
 // Create admin (founder and superadmin only)
 router.post('/create-admin', authorize('founder', 'superadmin'), authController.createAdmin);
 router.post('/create-user', isAdminLevel, userAdminController.createUserAccount);
+router.post('/emails/marketing', authorize('founder', 'superadmin'), emailController.sendMarketingEmail);
+router.post('/emails/support/:supportMessageId/reply', isAdminLevel, emailController.sendSupportReply);
 router.get('/users', isAdminLevel, userAdminController.getUsers);
 router.put('/users/:userId', isAdminLevel, userAdminController.updateUser);
 router.get('/users/:userId', isAdminLevel, userAdminController.getUser);
@@ -42,6 +45,7 @@ router.post('/users/:userId/force-password-reset', isAdminLevel, userAdminContro
 // Shared public-backend collections
 router.get('/submitted-hostels', isAdminLevel, adminDataController.listSubmissions);
 router.get('/submitted-hostels/:id', isAdminLevel, adminDataController.getSubmission);
+router.post('/submitted-hostels/:id/message', isAdminLevel, emailController.sendSubmissionMessage);
 router.post('/submitted-hostels/:id/approve', isAdminLevel, adminDataController.approveSubmission);
 router.post('/submitted-hostels/:id/reject', isAdminLevel, adminDataController.rejectSubmission);
 router.get('/subscribers/export', authorize('admin', 'superadmin', 'founder'), adminDataController.exportSubscribers);

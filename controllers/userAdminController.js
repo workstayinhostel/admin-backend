@@ -2,6 +2,8 @@ const User = require('../models/User');
 const Hostel = require('../models/Hostel');
 const logger = require('../config/logger');
 const { createAuditLog, canDeactivateUser, canActivateUser, canDeleteUser } = require('../utils/adminHelpers');
+const { sendTemplateEmail } = require('../utils/emailService');
+const emailTemplates = require('../utils/emailTemplates');
 
 const generateShortPassword = () => {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
@@ -62,7 +64,7 @@ exports.createUserAccount = async (req, res) => {
     });
 
     const roleLabel = role === 'hostelowner' ? 'Hostel Owner' : role.charAt(0).toUpperCase() + role.slice(1);
-    await require('../utils/emailService').sendTemplateEmail(normalizedEmail, require('../utils/emailTemplates').adminAccountCreated(firstName, normalizedEmail, tempPassword, roleLabel));
+    await sendTemplateEmail(normalizedEmail, emailTemplates.adminAccountCreated(firstName, normalizedEmail, tempPassword, roleLabel));
 
     if (role === 'hostelowner' && hostelCode) {
       const hostel = await Hostel.findOne({ hostelCode: String(hostelCode).trim() });
@@ -81,6 +83,7 @@ exports.createUserAccount = async (req, res) => {
           user.associatedHostels.push(hostel._id);
         }
         await user.save();
+        await sendTemplateEmail(user.email, emailTemplates.hostelOwnerMerged(user.firstName, user.email, hostel.name, hostel.hostelCode));
       }
     }
 

@@ -7,6 +7,8 @@ const Hostel = require('../models/Hostel');
 const Booking = require('../models/Booking');
 const Log = require('../models/Log');
 const { createAuditLog } = require('../utils/adminHelpers');
+const { sendTemplateEmail } = require('../utils/emailService');
+const emailTemplates = require('../utils/emailTemplates');
 
 const safeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -119,19 +121,56 @@ exports.approveSubmission = async (req, res) => {
     if (!submission) return;
     const payload = req.body.liveHostel || req.body;
     const required = ['name', 'type', 'description', 'phone'];
-    if (required.some((field) => !payload[field]) || !payload.location?.addressText || !Array.isArray(payload.location?.coordinates?.coordinates)) {
-      return res.status(400).json({ success: false, message: 'Complete live hostel details are required: name, type, description, phone, addressText and GeoJSON coordinates' });
+    const hasLiveHostelDetails = required.every((field) => payload[field]) && payload.location?.addressText;
+
+    if (!hasLiveHostelDetails) {
+      const emailResult = await sendTemplateEmail(
+        submission.listerEmail,
+        emailTemplates.submissionApproved(submission.listerEmail, submission.hostelName, submission.address)
+      );
+      if (!emailResult.success) {
+        return res.status(502).json({ success: false, message: 'Approval email could not be sent', error: emailResult.error });
+      }
+
+      await createAuditLog({
+        user: req.user._id,
+        userRole: req.user.role,
+        action: 'submission_approved',
+        resourceType: 'submittedHostel',
+        resourceId: submission._id,
+        description: `Approved submission and emailed ${submission.listerEmail}`,
+        changes: { after: { emailSent: true } },
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent')
+      });
+      await SubmittedHostel.deleteOne({ _id: submission._id });
+      return res.status(200).json({
+        success: true,
+        message: 'Submission approved and approval email sent',
+        data: { submissionId: submission._id, emailSent: true }
+      });
     }
-    const coordinates = payload.location.coordinates.coordinates.map(Number);
-    if (coordinates.length !== 2 || !Number.isFinite(coordinates[0]) || !Number.isFinite(coordinates[1])) {
-      return res.status(400).json({ success: false, message: 'Coordinates must be [longitude, latitude]' });
+
+    const { coordinates: submittedCoordinates, ...locationDetails } = payload.location;
+    let coordinates;
+    if (submittedCoordinates?.coordinates !== undefined) {
+      if (!Array.isArray(submittedCoordinates.coordinates) || submittedCoordinates.coordinates.length !== 2) {
+        return res.status(400).json({ success: false, message: 'Coordinates, when provided, must be [longitude, latitude]' });
+      }
+      coordinates = submittedCoordinates.coordinates.map(Number);
+      if (!coordinates.every(Number.isFinite)) {
+        return res.status(400).json({ success: false, message: 'Coordinates, when provided, must be [longitude, latitude]' });
+      }
     }
     const duplicate = await Hostel.findOne({ $or: [{ name: payload.name.trim() }, { whatsappNumber: submission.whatsapp }] }).select('_id name');
     if (duplicate) return res.status(409).json({ success: false, message: 'A matching live hostel already exists', hostel: duplicate });
 
     const hostel = await Hostel.create({
       ...payload,
-      location: { ...payload.location, coordinates: { type: 'Point', coordinates } },
+      location: {
+        ...locationDetails,
+        ...(coordinates ? { coordinates: { type: 'Point', coordinates } } : {})
+      },
       isLive: false,
       isApproved: false,
       isVerified: false,
@@ -140,9 +179,10 @@ exports.approveSubmission = async (req, res) => {
       email: payload.email || submission.listerEmail,
       whatsappNumber: payload.whatsappNumber || submission.whatsapp
     });
+    const emailResult = await sendTemplateEmail(submission.listerEmail, emailTemplates.submissionApproved(submission.listerEmail, hostel.name, hostel.location.addressText));
     await createAuditLog({ user: req.user._id, userRole: req.user.role, action: 'submission_approved', resourceType: 'submittedHostel', resourceId: submission._id, description: `Approved submission into hostel ${hostel._id}`, changes: { after: { hostelId: hostel._id, status: 'pending' } }, ipAddress: req.ip, userAgent: req.get('user-agent') });
     await SubmittedHostel.deleteOne({ _id: submission._id });
-    res.status(201).json({ success: true, message: 'Submission approved and archived', data: { hostel, submissionId: submission._id } });
+    res.status(201).json({ success: true, message: 'Submission approved and archived', data: { hostel, submissionId: submission._id, emailSent: emailResult.success } });
   } catch (error) { res.status(500).json({ success: false, message: error.message || 'Error approving submission' }); }
 };
 
@@ -150,9 +190,11 @@ exports.rejectSubmission = async (req, res) => {
   try {
     const submission = await getById(SubmittedHostel, req.params.id, res);
     if (!submission) return;
-    await createAuditLog({ user: req.user._id, userRole: req.user.role, action: 'submission_rejected', resourceType: 'submittedHostel', resourceId: submission._id, description: `Rejected submission from ${submission.listerEmail}`, changes: { after: { rejectionReason: req.body.reason || null } }, ipAddress: req.ip, userAgent: req.get('user-agent') });
+    const rejectionMessage = req.body.message || req.body.reason || 'Please contact our team for more information.';
+    const emailResult = await sendTemplateEmail(submission.listerEmail, emailTemplates.submissionRejected(submission.listerEmail, submission.hostelName, rejectionMessage));
+    await createAuditLog({ user: req.user._id, userRole: req.user.role, action: 'submission_rejected', resourceType: 'submittedHostel', resourceId: submission._id, description: `Rejected submission from ${submission.listerEmail}`, changes: { after: { rejectionReason: rejectionMessage } }, ipAddress: req.ip, userAgent: req.get('user-agent') });
     await SubmittedHostel.deleteOne({ _id: submission._id });
-    res.json({ success: true, message: 'Submission rejected and removed' });
+    res.json({ success: true, message: 'Submission rejected and removed', data: { submissionId: submission._id, emailSent: emailResult.success } });
   } catch (error) { res.status(500).json({ success: false, message: 'Error rejecting submission' }); }
 };
 

@@ -47,6 +47,9 @@ const LogSchema = new mongoose.Schema({
       'subscriber_deleted',
       'support_status_changed',
       'support_message_deleted',
+      'marketing_email_sent',
+      'support_reply_sent',
+      'submission_message_sent',
       'visit_deleted',
       'user_force_password_reset'
     ],

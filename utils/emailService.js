@@ -70,15 +70,19 @@ const sendEmail = async (to, subject, html) => {
  * @param {string} html - Email HTML content
  * @returns {Promise}
  */
-const sendBulkEmail = async (recipients, subject, html) => {
+const sendBulkEmail = async (recipients, template) => {
   try {
+    if (!Array.isArray(recipients) || !template?.subject || !template?.html) {
+      return { success: false, error: 'Recipients and a valid email template are required.' };
+    }
+
     const results = await Promise.all(
-      recipients.map(email => sendEmail(email, subject, html))
+      recipients.map(email => sendTemplateEmail(email, template))
     );
 
     const successful = results.filter(r => r.success).length;
     logger.info(`Bulk email sent: ${successful}/${recipients.length} successful`);
-    return { success: true, results };
+    return { success: successful === results.length, results };
   } catch (error) {
     logger.error('Bulk email error:', error);
     return { success: false, error: error.message };
@@ -96,7 +100,6 @@ const sendTemplateEmail = async (to, template) => {
 };
 
 module.exports = {
-  sendEmail,
   sendBulkEmail,
   sendTemplateEmail,
   getResendConfig,

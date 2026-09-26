@@ -904,22 +904,28 @@ exports.verifyHostel = async (req, res) => {
     const { status = 'verified', rejectionReason } = req.body;
     if (!['verified', 'rejected'].includes(status)) return res.status(400).json({ success: false, message: 'Status must be verified or rejected' });
 
+    let emailResult = { success: false };
     if (status === 'verified') {
       hostel.verificationStatus = { status: 'verified', verifiedBy: req.user._id, verificationDate: new Date() };
       hostel.isApproved = true;
       hostel.isLive = true;
       hostel.isVerified = true;
       hostel.activeDate = hostel.activeDate || new Date();
-      if (hostel.owner?.email) await sendTemplateEmail(hostel.owner.email, emailTemplates.hostelVerified(hostel.owner.firstName || hostel.owner.email, hostel.name, hostel.hostelCode));
     } else {
       hostel.verificationStatus = { status: 'rejected', verifiedBy: req.user._id, verificationDate: new Date(), rejectionReason };
       hostel.isApproved = false;
       hostel.isLive = false;
       hostel.isVerified = false;
-      if (hostel.owner?.email) await sendTemplateEmail(hostel.owner.email, emailTemplates.hostelRejected(hostel.owner.firstName || hostel.owner.email, hostel.name, rejectionReason || 'No reason provided'));
     }
 
     await hostel.save();
+    if (hostel.owner?.email) {
+      const emailTemplate = status === 'verified'
+        ? emailTemplates.hostelVerified(hostel.owner.firstName || hostel.owner.email, hostel.name, hostel.location?.addressText)
+        : emailTemplates.hostelRejected(hostel.owner.firstName || hostel.owner.email, hostel.name, rejectionReason || 'No reason provided');
+      emailResult = await sendTemplateEmail(hostel.owner.email, emailTemplate);
+    }
+
     await createAuditLog({
       user: req.user._id,
       userRole: req.user.role,
@@ -933,7 +939,7 @@ exports.verifyHostel = async (req, res) => {
       status: 'success'
     });
 
-    res.status(200).json({ success: true, message: `Hostel ${status} successfully`, hostel });
+    res.status(200).json({ success: true, message: `Hostel ${status} successfully`, hostel, emailSent: emailResult.success });
   } catch (error) {
     logger.error('Verify hostel error:', error);
     res.status(500).json({ success: false, message: 'Error verifying hostel' });
@@ -1234,6 +1240,7 @@ exports.changeHostelOwner = async (req, res) => {
 
     hostel.owner = newOwner._id;
     await hostel.save();
+    await sendTemplateEmail(newOwner.email, emailTemplates.hostelOwnerMerged(newOwner.firstName, newOwner.email, hostel.name, hostel.hostelCode));
     res.status(200).json({ success: true, message: 'Hostel owner changed successfully', hostel });
   } catch (error) {
     logger.error('Change hostel owner error:', error);
@@ -1265,6 +1272,7 @@ exports.associateHostelToUser = async (req, res) => {
     hostel.isVerified = true;
     hostel.verificationStatus = { status: 'verified', verifiedBy: req.user._id, verificationDate: new Date() };
     await hostel.save();
+    await sendTemplateEmail(user.email, emailTemplates.hostelOwnerMerged(user.firstName, user.email, hostel.name, hostel.hostelCode));
     res.status(200).json({ success: true, message: 'Hostel associated with owner successfully', hostel, user });
   } catch (error) {
     logger.error('Associate hostel to user error:', error);
@@ -1385,6 +1393,7 @@ exports.assignHostelOwner = async (req, res) => {
 
     hostel.owner = owner._id;
     await hostel.save();
+    await sendTemplateEmail(owner.email, emailTemplates.hostelOwnerMerged(owner.firstName, owner.email, hostel.name, hostel.hostelCode));
 
     await createAuditLog({
       user: req.user._id,

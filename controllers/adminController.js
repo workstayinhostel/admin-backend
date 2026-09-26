@@ -4,7 +4,7 @@ const Booking = require('../models/Booking');
 const Log = require('../models/Log');
 const Otp = require('../models/Otp');
 const Review = require('../models/Review');
-const { sendEmail, sendTemplateEmail } = require('../utils/emailService');
+const { sendTemplateEmail } = require('../utils/emailService');
 const emailTemplates = require('../utils/emailTemplates');
 const logger = require('../config/logger');
 const crypto = require('crypto');
@@ -127,13 +127,8 @@ const generateShortPassword = () => {
 };
 
 const sendAdminOtpToEmail = async (email, purpose, otp) => {
-  const subject = purpose === 'admin-password-reset'
-    ? 'Admin Portal Password Reset OTP'
-    : 'Admin Portal Verification OTP';
-  const html = `<p>Your Admin Portal OTP is <b>${otp}</b>. It expires in 10 minutes.</p>`;
-
   try {
-    const result = await sendEmail(email, subject, html);
+    const result = await sendTemplateEmail(email, emailTemplates.adminOtpEmail(email, otp, purpose));
     return { success: true, otp, ...result };
   } catch (error) {
     logger.warn(`Admin OTP email could not be delivered to ${email}: ${error.message}`);
@@ -423,7 +418,7 @@ exports.verifyHostel = async (req, res) => {
       hostel.isVerified = true;
       hostel.activeDate = hostel.activeDate || new Date();
       if (hostel.owner?.email) {
-        await sendTemplateEmail(hostel.owner.email, emailTemplates.hostelVerified(hostel.owner.firstName || hostel.owner.email, hostel.name, hostel.hostelCode));
+        await sendTemplateEmail(hostel.owner.email, emailTemplates.hostelVerified(hostel.owner.firstName || hostel.owner.email, hostel.name, hostel.location?.addressText));
       }
     } else {
       hostel.verificationStatus = {

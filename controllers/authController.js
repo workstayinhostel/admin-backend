@@ -2,7 +2,7 @@ const crypto = require('crypto');
 const User = require('../models/User');
 const Otp = require('../models/Otp');
 const Log = require('../models/Log');
-const { sendEmail, sendTemplateEmail } = require('../utils/emailService');
+const { sendTemplateEmail } = require('../utils/emailService');
 const emailTemplates = require('../utils/emailTemplates');
 const logger = require('../config/logger');
 const { roleHierarchy, createAuditLog } = require('../utils/adminHelpers');
@@ -361,6 +361,7 @@ exports.createUserAccount = async (req, res) => {
           user.associatedHostels.push(hostel._id);
         }
         await user.save();
+        await sendTemplateEmail(user.email, emailTemplates.hostelOwnerMerged(user.firstName, user.email, hostel.name, hostel.hostelCode));
       }
     }
 
