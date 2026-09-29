@@ -633,6 +633,7 @@ exports.getHostels = async (req, res) => {
       ['rank', 'rank'],
       ['rating', 'averageRating'],
       ['name', 'name'],
+      ['hostelCode', 'hostelCode'],
       ['createdAt', 'createdAt'],
       ['isLive', 'isLive'],
       ['isVerified', 'isVerified'],
@@ -643,17 +644,19 @@ exports.getHostels = async (req, res) => {
     const [sortField, sortOrder = 'desc'] = sortEntry.split(':');
     const sortKey = allowedSortFields.get(sortField);
     if (!sortKey) {
-      return res.status(400).json({ success: false, message: 'sort must be one of rank, rating, name, createdAt, isLive, isVerified, isApproved' });
+      return res.status(400).json({ success: false, message: 'sort must be one of rank, rating, name, hostelCode, createdAt, isLive, isVerified, isApproved' });
     }
     if (!['asc', 'desc'].includes(String(sortOrder).toLowerCase())) {
       return res.status(400).json({ success: false, message: 'sort order must be asc or desc' });
     }
 
     const sortQuery = {};
-    sortQuery[sortKey] = String(sortOrder).toLowerCase() === 'asc' ? 1 : -1;
+    const sortDirection = String(sortOrder).toLowerCase() === 'asc' ? 1 : -1;
+    sortQuery[sortKey] = sortDirection;
+    sortQuery._id = 1;
 
     if (sortKey === 'averageRating') {
-      sortQuery.averageRating = String(sortOrder).toLowerCase() === 'asc' ? 1 : -1;
+      sortQuery.averageRating = sortDirection;
     }
 
     const skip = (pageNumber - 1) * limitNumber;
@@ -662,6 +665,7 @@ exports.getHostels = async (req, res) => {
       Hostel.find(query)
         .populate('owner', 'firstName lastName email role phone')
         .sort(sortQuery)
+        .collation({ locale: 'en', strength: 2, numericOrdering: sortKey === 'hostelCode' })
         .skip(skip)
         .limit(limitNumber)
         .lean()
