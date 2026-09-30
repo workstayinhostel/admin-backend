@@ -32,8 +32,17 @@ exports.generatePdf = async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.setHeader('X-Report-Row-Count', String(rows.length));
     res.setHeader('X-Report-Truncated', String(rows.length === 2000));
-    doc.on('error', () => res.destroy());
-    doc.pipe(res);
+    const pdfChunks = [];
+    doc.on('data', (chunk) => pdfChunks.push(chunk));
+    doc.on('end', () => {
+      const pdf = Buffer.concat(pdfChunks);
+      res.setHeader('Content-Length', String(pdf.length));
+      res.end(pdf);
+    });
+    doc.on('error', (error) => {
+      if (res.headersSent) return res.destroy(error);
+      return res.status(500).json({ success: false, message: 'Failed to render the report PDF.' });
+    });
 
     const pageWidth = doc.page.width;
     const pageHeight = doc.page.height;
@@ -54,8 +63,9 @@ exports.generatePdf = async (req, res) => {
     const drawFooter = () => {
       doc.save();
       doc.font('Helvetica').fontSize(8).fillColor(colors.muted);
-      doc.text('Stay In Hostel  |  Admin Report', left, pageHeight - 25, { lineBreak: false });
-      doc.text(`Page ${pageNumber}`, right - 70, pageHeight - 25, { width: 70, align: 'right', lineBreak: false });
+      const footerY = pageHeight - 47;
+      doc.text('Stay In Hostel  |  Admin Report', left, footerY, { lineBreak: false });
+      doc.text(`Page ${pageNumber}`, right - 70, footerY, { width: 70, align: 'right', lineBreak: false });
       doc.restore();
     };
 

@@ -35,7 +35,8 @@ app.use(cors({
     }
     return callback(new Error(`CORS policy violation: origin ${origin} not allowed`));
   },
-  credentials: true
+  credentials: true,
+  exposedHeaders: ['Content-Disposition', 'Content-Length', 'X-Report-Row-Count', 'X-Report-Truncated']
 }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));

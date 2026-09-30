@@ -81,7 +81,7 @@ const buildHostelReport = async (filters, includeRemarks) => {
   const hostels = await Hostel.find(query)
     .select('name type hostelCode owner verificationStatus isVerified isLive isApproved isSponsored averageRating ratings location.addressText remarks remark')
     .populate('owner', 'firstName lastName email')
-    .sort({ name: 1 })
+    .sort({ hostelCode: 1, name: 1 })
     .limit(MAX_REPORT_ROWS)
     .lean();
 
