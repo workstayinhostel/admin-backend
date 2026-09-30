@@ -54,6 +54,11 @@ const appendRemarksColumn = (columns, rows, includeRemarks, getRemark) => {
   rows.forEach((row, index) => { row.remarks = getRemark(index); });
 };
 
+const prependSerialNumberColumn = (columns, rows) => {
+  columns.unshift({ key: 'serialNumber', label: 'SN' });
+  rows.forEach((row, index) => { row.serialNumber = index + 1; });
+};
+
 const buildHostelReport = async (filters, includeRemarks) => {
   const query = {};
   const type = text(filters.type || filters.hostelType || 'all').toLowerCase();
@@ -146,6 +151,7 @@ const buildUserReport = async (filters, includeRemarks) => {
     { key: 'status', label: 'Status' }
   ];
   appendRemarksColumn(columns, rows, includeRemarks, (index) => rows[index].remarks);
+  prependSerialNumberColumn(columns, rows);
 
   return {
     documentName: 'Users',
@@ -195,6 +201,7 @@ const buildBookingReport = async (body, filters, includeRemarks) => {
     { key: 'guestContact', label: 'Guest Contact' }
   ];
   appendRemarksColumn(columns, rows, includeRemarks, (index) => rows[index].remarks);
+  prependSerialNumberColumn(columns, rows);
   const filtersSummary = [period !== 'All dates' ? `Period: ${period}` : null, `Status: ${status}`, `Payment: ${paymentStatus}`].filter(Boolean);
 
   return { documentName: 'Bookings', columns, rows, summary: filtersSummary.join(' | ') };
@@ -238,13 +245,14 @@ const buildAuditReport = async (body, filters, includeRemarks, marketingOnly = f
     { key: 'timestamp', label: 'Timestamp' }
   ];
   appendRemarksColumn(columns, rows, includeRemarks, (index) => rows[index].remarks);
+  prependSerialNumberColumn(columns, rows);
   const summary = period === 'All dates' ? 'All audit events' : `Period: ${period}`;
   return { documentName: marketingOnly ? 'Marketing Emails' : 'Audit Report', columns, rows, summary };
 };
 
-const buildCustomReport = (body) => {
+const buildCustomReport = (body, includeRemarks) => {
   const documentName = text(body.documentName || body.docName);
-  const rows = body.rows;
+  let rows = body.rows;
   let columns = body.columns;
   if (!documentName || documentName.length > 100) throw badRequest('Provide a documentName up to 100 characters.');
   if (!Array.isArray(rows) || rows.length > MAX_REPORT_ROWS) {
@@ -262,6 +270,15 @@ const buildCustomReport = (body) => {
     return null;
   });
   if (columns.some((column) => !column)) throw badRequest('Each column must be a name or an object with a key.');
+  rows = rows.map((row) => Array.isArray(row)
+    ? Object.fromEntries(columns.map((column, index) => [column.key, row[index]]))
+    : row);
+  if (includeRemarks && !columns.some((column) => column.key.toLowerCase() === 'remarks')) {
+    columns.push({ key: 'remarks', label: 'Remarks' });
+  }
+  if (!includeRemarks) columns = columns.filter((column) => column.key.toLowerCase() !== 'remarks');
+  if (!columns.length) throw badRequest('At least one non-remarks column is required.');
+  prependSerialNumberColumn(columns, rows);
   const period = typeof body.dataPeriod === 'string' ? body.dataPeriod.trim() : 'All records';
   if (period.length > 160) throw badRequest('Data period must be no more than 160 characters.');
   return { documentName, columns, rows, summary: period };
@@ -277,7 +294,7 @@ exports.buildReport = async (body = {}) => {
   if (type === 'booking' || type === 'bookings') return buildBookingReport(body, filters, includeRemarks);
   if (type === 'audit' || type === 'audits' || type === 'audit-report') return buildAuditReport(body, filters, includeRemarks);
   if (['marketing-email', 'marketing-emails', 'emails'].includes(type)) return buildAuditReport(body, filters, includeRemarks, true);
-  if (type === 'custom') return buildCustomReport(body);
+  if (type === 'custom') return buildCustomReport(body, includeRemarks);
   throw badRequest('reportType must be hostels, users, bookings, audit, marketing-emails, or custom.');
 };
 
