@@ -30,6 +30,7 @@ const userSchema = new mongoose.Schema({
   resetPasswordExpiry: { type: Date, select: false },
   lastPasswordChangeAt: Date,
   forcePasswordChange: Boolean,
+  remarks: { type: String, trim: true, maxlength: 1000, default: '' },
   activeSessionToken: { type: String, default: null },
   lastLogin: Date,
   loginCount: Number,

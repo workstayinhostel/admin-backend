@@ -125,7 +125,7 @@ exports.getUsers = async (req, res) => {
     }
 
     const [users, total] = await Promise.all([
-      User.find(query).select('firstName lastName email phone role isVerified isActive associatedHostels studentInfo hostelOwnerInfo emailNotificationsEnabled authProvider profilePicture lastPasswordChangeAt lastLogin forcePasswordChange tokenVersion loginCount createdAt updatedAt').sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit),
+      User.find(query).select('firstName lastName email phone role isVerified isActive associatedHostels studentInfo hostelOwnerInfo emailNotificationsEnabled authProvider profilePicture lastPasswordChangeAt lastLogin forcePasswordChange remarks tokenVersion loginCount createdAt updatedAt').sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit),
       User.countDocuments(query)
     ]);
     res.status(200).json({ success: true, count: users.length, total, users, pagination: { page, limit, pages: Math.ceil(total / limit) } });
@@ -140,13 +140,17 @@ exports.updateUser = async (req, res) => {
     const user = await User.findById(req.params.userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    const { firstName, lastName, email, phone, role, isActive } = req.body;
+    const { firstName, lastName, email, phone, role, isActive, remarks } = req.body;
+    if (remarks !== undefined && (typeof remarks !== 'string' || remarks.length > 1000)) {
+      return res.status(400).json({ success: false, message: 'Remarks must be text with no more than 1,000 characters.' });
+    }
     if (firstName) user.firstName = firstName;
     if (lastName) user.lastName = lastName;
     if (email) user.email = String(email).trim().toLowerCase();
     if (phone) user.phone = phone;
     if (role) user.role = role;
     if (isActive !== undefined) user.isActive = Boolean(isActive);
+    if (remarks !== undefined) user.remarks = String(remarks).trim();
 
     await user.save();
     await createAuditLog({
@@ -160,7 +164,7 @@ exports.updateUser = async (req, res) => {
       userAgent: req.get('user-agent')
     });
 
-    res.status(200).json({ success: true, message: 'User updated successfully', user: { id: user._id, firstName: user.firstName, lastName: user.lastName, email: user.email, phone: user.phone, role: user.role, isActive: user.isActive } });
+    res.status(200).json({ success: true, message: 'User updated successfully', user: { id: user._id, firstName: user.firstName, lastName: user.lastName, email: user.email, phone: user.phone, role: user.role, isActive: user.isActive, remarks: user.remarks } });
   } catch (error) {
     logger.error('Update user error:', error);
     res.status(500).json({ success: false, message: error.message || 'Error updating user' });
@@ -170,7 +174,7 @@ exports.updateUser = async (req, res) => {
 exports.getUser = async (req, res) => {
   try {
     const user = await User.findById(req.params.userId)
-      .select('firstName lastName email phone role isVerified isActive associatedHostels savedHostels studentInfo hostelOwnerInfo emailNotificationsEnabled authProvider googleId profilePicture lastPasswordChangeAt lastLogin forcePasswordChange tokenVersion loginCount createdAt updatedAt')
+      .select('firstName lastName email phone role isVerified isActive associatedHostels savedHostels studentInfo hostelOwnerInfo emailNotificationsEnabled authProvider googleId profilePicture lastPasswordChangeAt lastLogin forcePasswordChange remarks tokenVersion loginCount createdAt updatedAt')
       .populate('associatedHostels', 'name hostelCode type');
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
     res.json({ success: true, data: user });
@@ -184,13 +188,16 @@ exports.updateUserProfile = async (req, res) => {
   try {
     const user = await User.findById(req.params.userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
-    const allowedFields = ['firstName', 'lastName', 'phone', 'emailNotificationsEnabled', 'studentInfo', 'hostelOwnerInfo', 'profilePicture'];
+    const allowedFields = ['firstName', 'lastName', 'phone', 'emailNotificationsEnabled', 'studentInfo', 'hostelOwnerInfo', 'profilePicture', 'remarks'];
     const before = {};
     const fieldsChanged = [];
     for (const field of allowedFields) {
       if (req.body[field] !== undefined) {
+        if (field === 'remarks' && (typeof req.body[field] !== 'string' || req.body[field].length > 1000)) {
+          return res.status(400).json({ success: false, message: 'Remarks must be text with no more than 1,000 characters.' });
+        }
         before[field] = user[field];
-        user[field] = req.body[field];
+        user[field] = field === 'remarks' ? req.body[field].trim() : req.body[field];
         fieldsChanged.push(field);
       }
     }
