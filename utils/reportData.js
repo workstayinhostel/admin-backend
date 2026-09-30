@@ -208,11 +208,13 @@ const buildBookingReport = async (body, filters, includeRemarks) => {
 };
 
 const buildAuditReport = async (body, filters, includeRemarks, marketingOnly = false) => {
-  const { queryRange, summary: period } = parseDateRange(body, filters);
+  const { queryRange, summary: period } = marketingOnly
+    ? { queryRange: {}, summary: 'All marketing email campaigns' }
+    : parseDateRange(body, filters);
   const query = marketingOnly ? { action: 'marketing_email_sent' } : {};
-  if (Object.keys(queryRange).length) query.createdAt = queryRange;
+  if (!marketingOnly && Object.keys(queryRange).length) query.createdAt = queryRange;
   if (!marketingOnly && filters.action && !isAll(filters.action)) query.action = text(filters.action);
-  if (filters.status && !isAll(filters.status)) {
+  if (!marketingOnly && filters.status && !isAll(filters.status)) {
     const status = text(filters.status).toLowerCase();
     if (!['success', 'failed', 'pending'].includes(status)) throw badRequest('Audit status must be success, failed, or pending.');
     query.status = status;
@@ -246,7 +248,7 @@ const buildAuditReport = async (body, filters, includeRemarks, marketingOnly = f
   ];
   appendRemarksColumn(columns, rows, includeRemarks, (index) => rows[index].remarks);
   prependSerialNumberColumn(columns, rows);
-  const summary = period === 'All dates' ? 'All audit events' : `Period: ${period}`;
+  const summary = marketingOnly ? period : (period === 'All dates' ? 'All audit events' : `Period: ${period}`);
   return { documentName: marketingOnly ? 'Marketing Emails' : 'Audit Report', columns, rows, summary };
 };
 
