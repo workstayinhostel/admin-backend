@@ -49,6 +49,7 @@ if (process.env.ENABLE_REQUEST_LOGS === 'true') {
 
 // Mount Admin API Routes
 app.use('/api/admin', require('./routes/adminRoutes'));
+app.use('/api/admin/reports', require('./routes/reportRoutes'));
 app.use('/api/hostels', require('./routes/hostelRoutes'));
 
 // API Root Route

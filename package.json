@@ -31,6 +31,7 @@
     "morgan": "^1.10.0",
     "multer": "^1.4.5-lts.1",
     "nodemailer": "^6.9.6",
+    "pdfkit": "^0.20.2",
     "resend": "^6.18.1",
     "sharp": "^0.35.3",
     "uuid": "^9.0.0",
