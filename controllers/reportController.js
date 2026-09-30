@@ -22,6 +22,14 @@ const safeFilename = (value) => value
   .replace(/[^a-z0-9]+/g, '-')
   .replace(/^-|-$/g, '') || 'admin-report';
 
+const getNepalDateStamp = (date) => {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kathmandu', year: 'numeric', month: '2-digit', day: '2-digit'
+  }).formatToParts(date);
+  const dateParts = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  return `${dateParts.year}-${dateParts.month}-${dateParts.day}`;
+};
+
 const getColumnWidthRange = (column) => {
   const key = String(column.key || column.label || '').toLowerCase();
   if (key === 'sn' || key === 'serialnumber') return { min: 28, max: 32 };
@@ -80,6 +88,11 @@ const calculateColumnWidths = (doc, columns, rows, tableWidth) => {
         });
       }
     }
+  } else if (totalNonSerialWidth > 0) {
+    const extraWidth = availableWidth - totalNonSerialWidth;
+    nonSerialIndices.forEach((index) => {
+      widths[index] += extraWidth * widths[index] / totalNonSerialWidth;
+    });
   }
 
   return widths;
@@ -90,7 +103,7 @@ exports.generatePdf = async (req, res) => {
     const { documentName, rows, columns, summary } = await buildReport(req.body || {});
     const layout = columns.length > 4 ? 'landscape' : 'portrait';
     const doc = new PDFDocument({ size: 'A4', layout, margin: 36 });
-    const filename = `${safeFilename(documentName)}.pdf`;
+    const filename = `SIH-${safeFilename(documentName).toUpperCase()}-${getNepalDateStamp(new Date())}.pdf`;
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.setHeader('X-Report-Row-Count', String(rows.length));

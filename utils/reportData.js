@@ -293,9 +293,9 @@ exports.buildReport = async (body = {}) => {
   if (type === 'user' || type === 'users') return buildUserReport(filters, includeRemarks);
   if (type === 'booking' || type === 'bookings') return buildBookingReport(body, filters, includeRemarks);
   if (type === 'audit' || type === 'audits' || type === 'audit-report') return buildAuditReport(body, filters, includeRemarks);
-  if (['marketing-email', 'marketing-emails', 'emails'].includes(type)) return buildAuditReport(body, filters, includeRemarks, true);
+  if (['marketing', 'marketing-email', 'marketing-emails', 'emails'].includes(type)) return buildAuditReport(body, filters, includeRemarks, true);
   if (type === 'custom') return buildCustomReport(body, includeRemarks);
-  throw badRequest('reportType must be hostels, users, bookings, audit, marketing-emails, or custom.');
+  throw badRequest('reportType must be hostels, users, bookings, audit, marketing, marketing-emails, or custom.');
 };
 
 exports.MAX_REPORT_ROWS = MAX_REPORT_ROWS;
