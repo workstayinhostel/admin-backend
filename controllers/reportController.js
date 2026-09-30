@@ -22,6 +22,69 @@ const safeFilename = (value) => value
   .replace(/[^a-z0-9]+/g, '-')
   .replace(/^-|-$/g, '') || 'admin-report';
 
+const getColumnWidthRange = (column) => {
+  const key = String(column.key || column.label || '').toLowerCase();
+  if (key === 'sn' || key === 'serialnumber') return { min: 28, max: 32 };
+  if (key.includes('rating')) return { min: 42, max: 68 };
+  if (key.includes('type')) return { min: 42, max: 84 };
+  if (key.includes('status') || key.includes('verified') || key.includes('approved') || key === 'live' || key === 'sponsored') {
+    return { min: 54, max: 112 };
+  }
+  if (key.includes('date') || key.includes('timestamp')) return { min: 70, max: 126 };
+  if (key.includes('email')) return { min: 78, max: 172 };
+  if (key.includes('address') || key.includes('remarks')) return { min: 70, max: 205 };
+  if (key.includes('contact') || key.includes('phone')) return { min: 68, max: 126 };
+  if (key.includes('name')) return { min: 56, max: 154 };
+  if (key.includes('code')) return { min: 54, max: 104 };
+  return { min: 46, max: 150 };
+};
+
+const calculateColumnWidths = (doc, columns, rows, tableWidth) => {
+  const widths = columns.map((column, columnIndex) => {
+    const range = getColumnWidthRange(column);
+    const isSerialNumber = range.max === 32 && (column.key === 'serialNumber' || column.label === 'SN');
+    if (isSerialNumber) return range.min;
+
+    let longestWidth = doc.widthOfString(String(column.label || column.key), { fontSize: 8 });
+    rows.forEach((row) => {
+      const value = getColumnText(row, column, columnIndex);
+      value.split(/\r?\n/).forEach((line) => {
+        longestWidth = Math.max(longestWidth, doc.widthOfString(line.slice(0, 256), { fontSize: 8 }));
+      });
+    });
+    return Math.max(range.min, Math.min(range.max, Math.ceil(longestWidth + 14)));
+  });
+
+  const serialIndex = columns.findIndex((column) => column.key === 'serialNumber' || column.label === 'SN');
+  const serialWidth = serialIndex === -1 ? 0 : widths[serialIndex];
+  const availableWidth = tableWidth - serialWidth;
+  const nonSerialIndices = columns.map((_, index) => index).filter((index) => index !== serialIndex);
+  const totalNonSerialWidth = nonSerialIndices.reduce((total, index) => total + widths[index], 0);
+
+  if (totalNonSerialWidth > availableWidth && totalNonSerialWidth > 0) {
+    const ranges = nonSerialIndices.map((index) => getColumnWidthRange(columns[index]));
+    const minimumTotal = ranges.reduce((total, range) => total + range.min, 0);
+    if (minimumTotal >= availableWidth) {
+      const scale = availableWidth / totalNonSerialWidth;
+      nonSerialIndices.forEach((index) => { widths[index] *= scale; });
+    } else {
+      let reducibleWidth = nonSerialIndices.reduce((total, index) => {
+        return total + widths[index] - getColumnWidthRange(columns[index]).min;
+      }, 0);
+      let overflow = totalNonSerialWidth - availableWidth;
+      if (reducibleWidth > 0) {
+        nonSerialIndices.forEach((index) => {
+          const capacity = widths[index] - getColumnWidthRange(columns[index]).min;
+          const reduction = Math.min(capacity, overflow * capacity / reducibleWidth);
+          widths[index] -= reduction;
+        });
+      }
+    }
+  }
+
+  return widths;
+};
+
 exports.generatePdf = async (req, res) => {
   try {
     const { documentName, rows, columns, summary } = await buildReport(req.body || {});
@@ -49,7 +112,11 @@ exports.generatePdf = async (req, res) => {
     const left = 36;
     const right = pageWidth - 36;
     const tableWidth = right - left;
-    const columnWidth = tableWidth / columns.length;
+    const columnWidths = calculateColumnWidths(doc, columns, rows, tableWidth);
+    const columnOffsets = columnWidths.reduce((offsets, width, index) => {
+      offsets.push(index === 0 ? left : offsets[index - 1] + columnWidths[index - 1]);
+      return offsets;
+    }, []);
     const colors = {
       ink: '#202b2a',
       brand: '#1769aa',
@@ -72,7 +139,8 @@ exports.generatePdf = async (req, res) => {
     const drawTableHeader = (top) => {
       const headerHeight = 24;
       columns.forEach((column, index) => {
-        const x = left + index * columnWidth;
+        const x = columnOffsets[index];
+        const columnWidth = columnWidths[index];
         doc.rect(x, top, columnWidth, headerHeight).fillAndStroke(colors.brand, colors.brand);
         doc.font('Helvetica-Bold').fontSize(8).fillColor(colors.white)
           .text(column.label, x + 5, top + 7, { width: columnWidth - 10, height: headerHeight - 8, ellipsis: true });
@@ -88,9 +156,10 @@ exports.generatePdf = async (req, res) => {
       return drawTableHeader(68);
     };
 
-    const generatedOn = new Date().toLocaleDateString('en-US', {
-      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
-    });
+    const generatedOn = `${new Intl.DateTimeFormat('en-US', {
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+      hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'Asia/Kathmandu'
+    }).format(new Date())} Nepal Time (NPT)`;
     const generatedByName = [req.user.firstName, req.user.lastName].filter(Boolean).join(' ') || 'Admin';
     const generatedBy = `${generatedByName} (${req.user.email || ''})`;
     const headingX = left + 64;
@@ -123,8 +192,8 @@ exports.generatePdf = async (req, res) => {
 
     rows.forEach((row, rowIndex) => {
       const cells = columns.map((column, index) => getColumnText(row, column, index));
-      const cellHeights = cells.map((text) => doc.font('Helvetica').fontSize(fontSize)
-        .heightOfString(text || ' ', { width: Math.max(8, columnWidth - 10), lineGap: 1 }));
+      const cellHeights = cells.map((text, index) => doc.font('Helvetica').fontSize(fontSize)
+        .heightOfString(text || ' ', { width: Math.max(8, columnWidths[index] - 10), lineGap: 1 }));
       const rowHeight = Math.max(22, ...cellHeights.map((height) => height + 9));
 
       if (cursorY + rowHeight > pageHeight - 42) {
@@ -135,7 +204,8 @@ exports.generatePdf = async (req, res) => {
       }
 
       cells.forEach((cellText, index) => {
-        const x = left + index * columnWidth;
+        const x = columnOffsets[index];
+        const columnWidth = columnWidths[index];
         const fill = rowIndex % 2 === 0 ? colors.white : colors.soft;
         doc.rect(x, cursorY, columnWidth, rowHeight).fillAndStroke(fill, colors.grid);
         doc.font('Helvetica').fontSize(fontSize).fillColor(colors.ink)
