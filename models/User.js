@@ -48,8 +48,14 @@ userSchema.pre('save', async function (next) {
     return next();
   }
   try {
+    if (typeof this.$locals.progress === 'function') {
+      this.$locals.progress({ step: 'password-hashing', percentage: 80, message: 'Hashing Password' });
+    }
     const salt = await bcrypt.genSalt(10);
     this.password = await bcrypt.hash(this.password, salt);
+    if (typeof this.$locals.progress === 'function') {
+      this.$locals.progress({ step: 'database-save', percentage: 90, message: 'Saving User' });
+    }
     next();
   } catch (error) {
     next(error);

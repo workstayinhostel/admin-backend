@@ -32,6 +32,7 @@ router.use(checkPasswordChange);
 // Create admin (founder and superadmin only)
 router.post('/create-admin', authorize('founder', 'superadmin'), authController.createAdmin);
 router.post('/create-user', isAdminLevel, userAdminController.createUserAccount);
+router.post('/users/create-stream', isAdminLevel, userAdminController.createUserAccountStream);
 router.post('/emails/marketing', authorize('founder', 'superadmin'), emailController.sendMarketingEmail);
 router.post('/emails/support/:supportMessageId/reply', isAdminLevel, emailController.sendSupportReply);
 router.get('/users', isAdminLevel, userAdminController.getUsers);

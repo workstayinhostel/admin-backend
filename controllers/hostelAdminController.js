@@ -10,6 +10,7 @@ const logger = require('../config/logger');
 const { deleteFile, uploadMultipleFiles } = require('../config/supabase');
 const { normalizeHostelType, getHostelPermission, createAuditLog, isAdminRole } = require('../utils/adminHelpers');
 const { generateHostelCode } = require('../utils/hostelHelpers');
+const { setEventStreamHeaders, writeEvent } = require('../utils/sse');
 
 const resolveHostelByIdentifier = async (identifier) => {
   if (!identifier) return null;
@@ -330,17 +331,19 @@ const enrichHostelWithMetrics = async (hostel) => {
   };
 };
 
-const uploadHostelImages = async (req, res) => {
+const uploadHostelImages = async (req, onProgress = () => {}) => {
   try {
     if (!req.files || !req.files.length) {
       logger.warn('No files received in request');
-      return res.status(200).json({ success: true, images: [], message: 'No images uploaded' });
+      return { status: 200, body: { success: true, images: [], message: 'No images uploaded' } };
     }
 
     const uniqueFiles = req.files;
     const hostelName = String(req.body?.hostelName || req.body?.name || '').trim();
 
     logger.info(`Uploading ${uniqueFiles.length} image(s)${hostelName ? ` for "${hostelName}"` : ''}`);
+    onProgress({ step: 'image-validation', percentage: 25, message: 'Checking Images' });
+    onProgress({ step: 'image-upload', percentage: 50, message: 'Uploading Images' });
 
     const uploadResult = await uploadMultipleFiles(
       uniqueFiles.map(file => ({ buffer: file.buffer, originalname: file.originalname })),
@@ -368,30 +371,59 @@ const uploadHostelImages = async (req, res) => {
         : 'Image upload failed. Please try again.'
     };
 
-    res.status(200).json(response);
+    onProgress({ step: 'image-upload', percentage: 100, message: 'Images Uploaded' });
+    return { status: 200, body: response };
   } catch (error) {
     logger.error('Upload hostel images error:', error);
-    res.status(500).json({ success: false, message: error.message || 'Error uploading hostel images' });
+    return { status: 500, body: { success: false, message: error.message || 'Error uploading hostel images' } };
   }
 };
 
-exports.uploadHostelImages = uploadHostelImages;
+exports.uploadHostelImages = async (req, res) => {
+  const result = await uploadHostelImages(req);
+  res.status(result.status).json(result.body);
+};
 
-exports.createHostel = async (req, res) => {
+exports.uploadHostelImagesStream = async (req, res) => {
+  setEventStreamHeaders(res);
+  let lastPercentage = 0;
+  const progress = (update) => {
+    lastPercentage = update.percentage;
+    writeEvent(res, { type: 'progress', status: 'in_progress', ...update });
+  };
+
+  const result = await uploadHostelImages(req, progress);
+  writeEvent(res, {
+    type: 'result',
+    step: result.status >= 400 ? 'error' : 'complete',
+    percentage: result.status >= 400 ? lastPercentage : 100,
+    status: result.status >= 400 ? 'error' : 'completed',
+    ...result.body
+  });
+  res.end();
+};
+
+const createHostel = async (req, onProgress = () => {}) => {
   try {
     const actor = req.user;
     const payload = req.body;
 
     logger.info(`Creating hostel: "${payload.name}" (${payload.type})`);
+    onProgress({ step: 'validation', percentage: 10, message: 'Checking Details' });
 
     if (!payload.name || !payload.type || !payload.description || !payload.location || !payload.phone) {
-      return res.status(400).json({ success: false, message: 'name, type, description, location and phone are required' });
+      return { status: 400, body: { success: false, message: 'name, type, description, location and phone are required' } };
     }
 
-    // ===== STEP 2: CHECK FOR DUPLICATE HOSTEL FIRST (BEFORE ANY OTHER PROCESSING) =====
+    const normalizedType = normalizeHostelType(payload.type);
+    if (!normalizedType) {
+      return { status: 400, body: { success: false, message: 'Type must be one of boys, girls or pg' } };
+    }
+
+    onProgress({ step: 'duplicate-check', percentage: 25, message: 'Checking Duplicates' });
     const duplicateHostel = await findDuplicateHostel(payload);
     if (duplicateHostel && payload.confirmDuplicate !== true) {
-      return res.status(409).json({
+      return { status: 409, body: {
         success: false,
         message: `Similar hostel already exists: ${duplicateHostel.name} (Hostel code: ${duplicateHostel.hostelCode}). Please check before adding another one.`,
         requiresConfirmation: true,
@@ -401,19 +433,13 @@ exports.createHostel = async (req, res) => {
           hostelCode: duplicateHostel.hostelCode,
           location: duplicateHostel.location
         }
-      });
+      } };
     }
 
-    // ===== STEP 3: Validate type =====
-    const normalizedType = normalizeHostelType(payload.type);
-    if (!normalizedType) {
-      return res.status(400).json({ success: false, message: 'Type must be one of boys, girls or pg' });
-    }
-
-    // ===== STEP 4: Validate and process owner =====
     const ownerId = payload.ownerId || payload.owner || payload.ownerEmail || null;
     let owner = null;
     if (ownerId) {
+      onProgress({ step: 'owner-validation', percentage: 38, message: 'Checking Owner' });
       owner = await User.findOne({
         $or: [
           { _id: mongoose.Types.ObjectId.isValid(String(ownerId)) ? String(ownerId) : null },
@@ -422,16 +448,28 @@ exports.createHostel = async (req, res) => {
       });
 
       if (!owner) {
-        return res.status(400).json({ success: false, message: 'Provide a valid hostel owner user id or email when an owner is supplied' });
+        return { status: 400, body: { success: false, message: 'Provide a valid hostel owner user id or email when an owner is supplied' } };
       }
 
       if (!['hostelowner', 'founder'].includes(owner.role) && actor.role !== 'founder') {
-        return res.status(400).json({ success: false, message: 'Selected user is not a valid hostel owner.' });
+        return { status: 400, body: { success: false, message: 'Selected user is not a valid hostel owner.' } };
       }
     }
 
     const isAdminActor = ['founder', 'superadmin', 'admin'].includes(actor.role);
     const isExplicitlyVerified = payload.isVerified === true || payload.isVerified === 'true' || payload.isVerified === 1 || payload.verificationStatus?.status === 'verified';
+    const location = payload.location || {};
+    const mapLink = location.googleMapLink || payload.googleMapLink || '';
+    const suppliedCoordinates = location.coordinates?.coordinates;
+    onProgress({ step: 'map-coordinates', percentage: 45, message: 'Reading Map Coordinates' });
+    const extractedCoordinates = await extractCoordinatesFromGoogleMaps(mapLink);
+    const coordinates = hasValidCoordinates(extractedCoordinates)
+      ? extractedCoordinates
+      : hasValidCoordinates(suppliedCoordinates)
+        ? suppliedCoordinates.map(Number)
+        : [0, 0];
+
+    onProgress({ step: 'hostel-code', percentage: 60, message: 'Assigning SIH Code' });
     const existingCodes = await Hostel.find({}, { hostelCode: 1 }).lean();
     let hostelCode = payload.hostelCode || generateHostelCode(existingCodes.map(item => item.hostelCode), process.env.HOSTEL_CODE_PREFIX || 'SIH');
     let existingHostel = await Hostel.findOne({ hostelCode });
@@ -439,16 +477,6 @@ exports.createHostel = async (req, res) => {
       hostelCode = generateHostelCode([...existingCodes.map(item => item.hostelCode), hostelCode], process.env.HOSTEL_CODE_PREFIX || 'SIH');
       existingHostel = await Hostel.findOne({ hostelCode });
     }
-
-    const location = payload.location || {};
-    const mapLink = location.googleMapLink || payload.googleMapLink || '';
-    const suppliedCoordinates = location.coordinates?.coordinates;
-    const extractedCoordinates = await extractCoordinatesFromGoogleMaps(mapLink);
-    const coordinates = hasValidCoordinates(extractedCoordinates)
-      ? extractedCoordinates
-      : hasValidCoordinates(suppliedCoordinates)
-        ? suppliedCoordinates.map(Number)
-        : [0, 0];
 
     const normalizedRoomTypes = Array.isArray(payload.roomTypes) ? payload.roomTypes.map(item => ({
       roomType: item.roomType || item.name || 'Room',
@@ -465,13 +493,44 @@ exports.createHostel = async (req, res) => {
 
     const foodItems = buildFoodItems(payload);
     const normalizedFacilities = buildFacilities(payload);
-    const images = buildImages(payload);
+    const files = Array.isArray(req.files) ? req.files : [];
+    let imageUpload = null;
+    let uploadedImages = [];
+    if (files.length) {
+      onProgress({ step: 'image-upload', percentage: 70, message: 'Uploading Images' });
+      imageUpload = await uploadMultipleFiles(
+        files.map(file => ({ buffer: file.buffer, originalname: file.originalname })),
+        'hostels',
+        payload.name,
+        ({ completed, total }) => onProgress({
+          step: 'image-upload',
+          percentage: 70 + Math.round((completed / total) * 15),
+          message: `Uploaded Image ${completed}/${total}`
+        })
+      );
+      uploadedImages = imageUpload.successful.map(image => ({
+        url: image.secure_url || image.url,
+        path: image.path
+      }));
+    } else {
+      onProgress({
+        step: 'image-upload',
+        percentage: 85,
+        message: Array.isArray(payload.images) && payload.images.length ? 'Using Existing Images' : 'No Images Selected'
+      });
+    }
+
+    onProgress({ step: 'image-processing', percentage: 87, message: 'Preparing Images' });
+    const existingImages = Array.isArray(payload.images) ? payload.images : [];
+    const images = buildImages({ images: [...existingImages, ...uploadedImages] });
 
     logger.info(`Saving hostel "${payload.name}" with ${images.length} image(s); code: ${hostelCode}`);
     if (images.length === 0) {
       logger.warn('[CREATE HOSTEL] No images provided for this hostel');
     }
 
+    if (owner) onProgress({ step: 'owner-assignment', percentage: 89, message: 'Assigning Owner' });
+    onProgress({ step: 'database-save', percentage: 92, message: 'Saving Hostel' });
     const hostel = await Hostel.create({
       name: payload.name,
       owner: owner ? owner._id : null,
@@ -498,6 +557,7 @@ exports.createHostel = async (req, res) => {
         status: 'pending'
       }
     });
+    onProgress({ step: 'database-save', percentage: 96, message: 'Hostel Saved' });
 
     logger.info(`Hostel created successfully: ${hostel.name} (${hostel.type}) | code: ${hostel.hostelCode} | images: ${hostel.images.length}`);
 
@@ -508,6 +568,7 @@ exports.createHostel = async (req, res) => {
       await owner.save();
     }
 
+    onProgress({ step: 'finalizing', percentage: 98, message: 'Finalizing Hostel' });
     await createAuditLog({
       user: actor._id,
       userRole: actor.role,
@@ -520,23 +581,94 @@ exports.createHostel = async (req, res) => {
       userAgent: req.get('user-agent'),
       status: 'success'
     });
+    onProgress({ step: 'complete', percentage: 100, message: 'Creation Complete' });
 
     const successMessage = owner
       ? `Hostel (${hostel.hostelCode}) named ${hostel.name} created successfully with ${hostel.images.length} image${hostel.images.length !== 1 ? 's' : ''}.`
       : `Hostel (${hostel.hostelCode}) named ${hostel.name} created successfully with ${hostel.images.length} image${hostel.images.length !== 1 ? 's' : ''} without an assigned owner.`;
 
-    res.status(201).json({ 
+    return { status: 201, body: {
       success: true, 
       message: successMessage, 
       hostel: {
         ...hostel.toObject(),
         imageCount: hostel.images.length
-      }
-    });
+      },
+      imageUpload: imageUpload ? {
+        uploadedCount: imageUpload.successful.length,
+        failedCount: imageUpload.failed.length
+      } : undefined
+    } };
   } catch (error) {
     logger.error('Create hostel error:', error);
-    res.status(500).json({ success: false, message: error.message || 'Error creating hostel' });
+    return { status: 500, body: { success: false, message: error.message || 'Error creating hostel' } };
   }
+};
+
+exports.createHostel = async (req, res) => {
+  const result = await createHostel(req);
+  res.status(result.status).json(result.body);
+};
+
+exports.createHostelStream = async (req, res) => {
+  setEventStreamHeaders(res);
+  let lastPercentage = 0;
+  const progress = (update) => {
+    lastPercentage = update.percentage;
+    writeEvent(res, { type: 'progress', status: 'in_progress', ...update });
+  };
+
+  const result = await createHostel(req, progress);
+  writeEvent(res, {
+    type: 'result',
+    step: result.body.requiresConfirmation ? 'duplicate-check' : result.status >= 400 ? 'error' : 'complete',
+    percentage: result.body.requiresConfirmation ? 30 : result.status >= 400 ? lastPercentage : 100,
+    status: result.body.requiresConfirmation ? 'confirmation_required' : result.status >= 400 ? 'error' : 'completed',
+    ...result.body
+  });
+  res.end();
+};
+
+exports.createHostelWithImagesStream = async (req, res) => {
+  setEventStreamHeaders(res);
+  let lastPercentage = 0;
+  const progress = (update) => {
+    lastPercentage = update.percentage;
+    writeEvent(res, { type: 'progress', status: 'in_progress', ...update });
+  };
+
+  try {
+    let payload = req.body || {};
+    if (typeof payload.payload === 'string') {
+      payload = JSON.parse(payload.payload);
+    } else if (payload.payload && typeof payload.payload === 'object') {
+      payload = payload.payload;
+    }
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw new Error('Hostel payload must be a JSON object');
+    }
+
+    req.body = payload;
+    const result = await createHostel(req, progress);
+    writeEvent(res, {
+      type: 'result',
+      step: result.body.requiresConfirmation ? 'duplicate-check' : result.status >= 400 ? 'error' : 'complete',
+      percentage: result.body.requiresConfirmation ? 25 : result.status >= 400 ? lastPercentage : 100,
+      status: result.body.requiresConfirmation ? 'confirmation_required' : result.status >= 400 ? 'error' : 'completed',
+      ...result.body
+    });
+  } catch (error) {
+    writeEvent(res, {
+      type: 'result',
+      step: 'error',
+      percentage: lastPercentage,
+      status: 'error',
+      success: false,
+      message: error.message || 'Invalid hostel payload'
+    });
+  }
+
+  res.end();
 };
 
 exports.getHostels = async (req, res) => {

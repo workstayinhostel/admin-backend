@@ -52,6 +52,7 @@ if (process.env.ENABLE_REQUEST_LOGS === 'true') {
 app.use('/api/admin', require('./routes/adminRoutes'));
 app.use('/api/admin/reports', require('./routes/reportRoutes'));
 app.use('/api/hostels', require('./routes/hostelRoutes'));
+app.use('/api/users', require('./routes/userRoutes'));
 
 // API Root Route
 app.get('/', (req, res) => {

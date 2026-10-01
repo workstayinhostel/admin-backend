@@ -4,6 +4,7 @@ const logger = require('../config/logger');
 const { createAuditLog, canDeactivateUser, canActivateUser, canDeleteUser } = require('../utils/adminHelpers');
 const { sendTemplateEmail } = require('../utils/emailService');
 const emailTemplates = require('../utils/emailTemplates');
+const { setEventStreamHeaders, writeEvent } = require('../utils/sse');
 
 const generateShortPassword = () => {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
@@ -102,6 +103,111 @@ exports.createUserAccount = async (req, res) => {
   } catch (error) {
     logger.error('Create user account error:', error);
     res.status(500).json({ success: false, message: error.message || 'Error creating account' });
+  }
+};
+
+exports.createUserAccountStream = async (req, res) => {
+  setEventStreamHeaders(res);
+  const progress = (update) => writeEvent(res, { type: 'progress', status: 'in_progress', ...update });
+  const sendResult = (payload) => {
+    writeEvent(res, { type: 'result', ...payload });
+    res.end();
+  };
+
+  try {
+    const actor = req.user;
+    const { firstName, lastName, email, phone, role, password, hostelCode } = req.body;
+    progress({ step: 'validation', percentage: 20, message: 'Checking Details' });
+
+    if (!firstName || !lastName || !email || !phone) {
+      return sendResult({ status: 'error', step: 'validation', percentage: 20, success: false, message: 'firstName, lastName, email and phone are required' });
+    }
+
+    const normalizedEmail = String(email).trim().toLowerCase();
+    const allowedRoles = ['admin', 'superadmin', 'hostelowner'];
+    if (role === 'founder') {
+      return sendResult({ status: 'error', step: 'validation', percentage: 20, success: false, message: 'Founder accounts can only be created via seed script.' });
+    }
+    if (!allowedRoles.includes(role)) {
+      return sendResult({ status: 'error', step: 'validation', percentage: 20, success: false, message: 'Role must be admin, superadmin or hostelowner' });
+    }
+    if (actor.role === 'admin' && role !== 'hostelowner') {
+      return sendResult({ status: 'error', step: 'validation', percentage: 20, success: false, message: 'Admins can only create hostel owner accounts.' });
+    }
+    if (actor.role === 'superadmin' && !['admin', 'hostelowner'].includes(role)) {
+      return sendResult({ status: 'error', step: 'validation', percentage: 20, success: false, message: 'Superadmins can create admin or hostel owner accounts only.' });
+    }
+
+    progress({ step: 'duplicate-check', percentage: 50, message: 'Checking Duplicates' });
+    const existingUser = await User.findOne({
+      $or: [{ email: normalizedEmail }, { phone: String(phone).trim() }]
+    });
+    if (existingUser) {
+      const duplicateField = existingUser.email === normalizedEmail ? 'Email' : 'Phone';
+      return sendResult({ status: 'error', step: 'duplicate-check', percentage: 50, success: false, message: `${duplicateField} already registered` });
+    }
+
+    const tempPassword = (password && password.trim()) || generateShortPassword();
+    const user = new User({
+      firstName,
+      lastName,
+      email: normalizedEmail,
+      phone,
+      password: tempPassword,
+      role,
+      isVerified: true,
+      isActive: false,
+      forcePasswordChange: true,
+      createdBy: actor._id
+    });
+    user.$locals.progress = progress;
+    await user.save();
+    progress({ step: 'database-save', percentage: 100, message: 'Account Created' });
+
+    const roleLabel = role === 'hostelowner' ? 'Hostel Owner' : role.charAt(0).toUpperCase() + role.slice(1);
+    await sendTemplateEmail(normalizedEmail, emailTemplates.adminAccountCreated(firstName, normalizedEmail, tempPassword, roleLabel));
+
+    if (role === 'hostelowner' && hostelCode) {
+      const hostel = await Hostel.findOne({ hostelCode: String(hostelCode).trim() });
+      if (hostel) {
+        if (hostel.owner) {
+          return sendResult({ status: 'error', step: 'hostel-link', percentage: 100, success: false, message: 'This hostel code already belongs to an owner.' });
+        }
+        hostel.owner = user._id;
+        hostel.isApproved = true;
+        hostel.isLive = true;
+        hostel.isVerified = true;
+        hostel.verificationStatus = { status: 'verified', verifiedBy: actor._id, verificationDate: new Date() };
+        await hostel.save();
+        user.associatedHostels = user.associatedHostels || [];
+        if (!user.associatedHostels.includes(hostel._id)) user.associatedHostels.push(hostel._id);
+        await user.save();
+        await sendTemplateEmail(user.email, emailTemplates.hostelOwnerMerged(user.firstName, user.email, hostel.name, hostel.hostelCode));
+      }
+    }
+
+    await createAuditLog({
+      user: actor._id,
+      userRole: actor.role,
+      action: 'user_created',
+      resourceType: 'user',
+      resourceId: user._id,
+      description: `Created ${role}: ${normalizedEmail}`,
+      ipAddress: req.ip,
+      userAgent: req.get('user-agent')
+    });
+
+    sendResult({
+      status: 'completed',
+      step: 'complete',
+      percentage: 100,
+      success: true,
+      message: `${roleLabel} account created successfully`,
+      user: { id: user._id, email: user.email, role: user.role }
+    });
+  } catch (error) {
+    logger.error('Create user account stream error:', error);
+    sendResult({ status: 'error', step: 'error', percentage: 100, success: false, message: error.message || 'Error creating account' });
   }
 };
 

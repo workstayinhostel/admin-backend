@@ -142,7 +142,7 @@ const uploadFile = async (fileBuffer, folder, fileName, retries = 5) => {
  * @param {string} hostelName - Hostel name for folder organization & file naming
  * @returns {Promise<Object>} - { successful: [], failed: [] }
  */
-const uploadMultipleFiles = async (files, folder, hostelName = '') => {
+const uploadMultipleFiles = async (files, folder, hostelName = '', onProgress = () => {}) => {
   try {
     const successful = [];
     const failed = [];
@@ -154,10 +154,12 @@ const uploadMultipleFiles = async (files, folder, hostelName = '') => {
       const imageNumber = index + 1;
       const baseName = getStorageBaseName(hostelName, file.originalname, index);
       const uniqueFileName = `${baseName}(${imageNumber})`;
+      let succeeded = false;
 
       try {
         const result = await uploadFile(file.buffer, folder, uniqueFileName, 5);
         successful.push(result);
+        succeeded = true;
         logger.info(`Image ${imageNumber}/${files.length} uploaded successfully`);
       } catch (error) {
         logger.warn(`Image ${imageNumber}/${files.length} failed: ${file.originalname} - ${error.message}`);
@@ -170,6 +172,8 @@ const uploadMultipleFiles = async (files, folder, hostelName = '') => {
         });
         // CONTINUE WITH NEXT FILE instead of throwing
       }
+
+      onProgress({ completed: imageNumber, total: files.length, fileName: file.originalname, succeeded });
     }
 
     logger.info(`Image upload summary: ${successful.length}/${files.length} successful, ${failed.length} failed`);

@@ -14,8 +14,11 @@ const router = express.Router();
 
 // 2. Add upload.array('images', 5) into the middleware chain
 router.post('/upload-images', protect, isAdminLevel, upload.array('images', 5), hostelAdminController.uploadHostelImages);
+router.post('/upload-images-stream', protect, isAdminLevel, upload.array('images', 5), hostelAdminController.uploadHostelImagesStream);
 
 router.post('/create', protect, isAdminLevel, hostelAdminController.createHostel);
+router.post('/create-stream', protect, isAdminLevel, hostelAdminController.createHostelStream);
+router.post('/create-image-stream', protect, isAdminLevel, upload.array('images', 5), hostelAdminController.createHostelWithImagesStream);
 router.get('/', protect, isAdminLevel, hostelAdminController.getHostels);
 router.get('/:hostelId', protect, isAdminLevel, hostelAdminController.getHostelById);
 router.put('/:hostelId', protect, isAdminLevel, hostelAdminController.updateHostel);
