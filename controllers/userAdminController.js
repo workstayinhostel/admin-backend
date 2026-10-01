@@ -229,6 +229,7 @@ exports.changeUserRole = async (req, res) => {
     user.role = targetRole;
     user.tokenVersion = (user.tokenVersion || 0) + 1;
     user.activeSessionToken = null;
+    user.activeSessionTokens = [];
     await user.save();
     await createAuditLog({ user: req.user._id, userRole: req.user.role, action: 'user_role_changed', resourceType: 'user', resourceId: user._id, description: `Changed role from ${before} to ${targetRole}`, changes: { before: { role: before }, after: { role: targetRole } }, ipAddress: req.ip, userAgent: req.get('user-agent') });
     res.json({ success: true, message: 'User role changed successfully', data: { id: user._id, role: user.role } });
@@ -246,6 +247,7 @@ exports.setUserActive = async (req, res) => {
     if (!isActive) {
       user.tokenVersion = (user.tokenVersion || 0) + 1;
       user.activeSessionToken = null;
+      user.activeSessionTokens = [];
     }
     await user.save();
     await createAuditLog({ user: req.user._id, userRole: req.user.role, action: isActive ? 'user_activated' : 'user_deactivated', resourceType: 'user', resourceId: user._id, description: `${isActive ? 'Activated' : 'Deactivated'} user ${user.email}`, ipAddress: req.ip, userAgent: req.get('user-agent') });
@@ -261,6 +263,7 @@ exports.forcePasswordReset = async (req, res) => {
     user.forcePasswordChange = true;
     user.tokenVersion = (user.tokenVersion || 0) + 1;
     user.activeSessionToken = null;
+    user.activeSessionTokens = [];
     await user.save();
     await createAuditLog({ user: req.user._id, userRole: req.user.role, action: 'user_force_password_reset', resourceType: 'user', resourceId: user._id, description: `Forced password reset for ${user.email}`, ipAddress: req.ip, userAgent: req.get('user-agent') });
     res.json({ success: true, message: 'Password reset required on next login' });
@@ -349,6 +352,7 @@ exports.deactivateUser = async (req, res) => {
     user.forcePasswordChange = false;
     user.tokenVersion = (user.tokenVersion || 0) + 1;
     user.activeSessionToken = null;
+    user.activeSessionTokens = [];
     await user.save();
 
     await createAuditLog({

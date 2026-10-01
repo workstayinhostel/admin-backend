@@ -164,7 +164,7 @@ exports.adminLogin = async (req, res) => {
     }
 
     const token = user.getSignedJwtToken();
-    user.activeSessionToken = user.getSessionTokenHash(token);
+  user.addSessionToken(token);
     user.lastLogin = new Date();
     user.loginCount = (user.loginCount || 0) + 1;
     user.ipAddress = req.ip;

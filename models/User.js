@@ -32,6 +32,7 @@ const userSchema = new mongoose.Schema({
   forcePasswordChange: Boolean,
   remarks: { type: String, trim: true, maxlength: 1000, default: '' },
   activeSessionToken: { type: String, default: null },
+  activeSessionTokens: { type: [String], default: [] },
   lastLogin: Date,
   loginCount: Number,
   ipAddress: String,
@@ -71,6 +72,14 @@ userSchema.methods.getSignedJwtToken = function () {
 userSchema.methods.getSessionTokenHash = function (token) {
   const crypto = require('crypto');
   return crypto.createHash('sha256').update(String(token || '')).digest('hex');
+};
+
+userSchema.methods.addSessionToken = function (token) {
+  const tokens = this.activeSessionTokens || [];
+  const legacyToken = this.activeSessionToken;
+  const tokenHash = this.getSessionTokenHash(token);
+  this.activeSessionTokens = [...new Set([...tokens, ...(legacyToken ? [legacyToken] : []), tokenHash])].slice(-2);
+  this.activeSessionToken = null;
 };
 
 module.exports = mongoose.model('User', userSchema);

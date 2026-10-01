@@ -30,7 +30,12 @@ const protect = async (req, res, next) => {
     }
 
     const incomingTokenHash = user.getSessionTokenHash(token);
-    if (user.activeSessionToken && user.activeSessionToken !== incomingTokenHash) {
+    const activeSessionTokens = user.activeSessionTokens || [];
+    const hasActiveSessionList = activeSessionTokens.length > 0;
+    const hasInvalidSession = hasActiveSessionList
+      ? !activeSessionTokens.includes(incomingTokenHash)
+      : user.activeSessionToken && user.activeSessionToken !== incomingTokenHash;
+    if (hasInvalidSession) {
       return res.status(401).json({
         success: false,
         message: 'Your session has expired. Please log in again.'
