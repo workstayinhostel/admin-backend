@@ -258,7 +258,7 @@ exports.updateSupportStatus = async (req, res) => {
     if (!['new', 'in-progress', 'resolved'].includes(req.body.status)) return res.status(400).json({ success: false, message: 'Status must be new, in-progress or resolved' });
     const before = message.status;
     message.status = req.body.status;
-    await message.save();
+    await message.save({ validateModifiedOnly: true });
     await createAuditLog({ user: req.user._id, userRole: req.user.role, action: 'support_status_changed', resourceType: 'supportMessage', resourceId: message._id, description: `Changed support status from ${before} to ${message.status}`, changes: { before: { status: before }, after: { status: message.status } }, ipAddress: req.ip, userAgent: req.get('user-agent') });
     res.json({ success: true, message: 'Support status updated', data: message });
   } catch (error) { res.status(500).json({ success: false, message: 'Error updating support status' }); }
