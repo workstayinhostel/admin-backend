@@ -7,6 +7,7 @@ const path = require('path');
 const connectDB = require('./config/db');
 const logger = require('./config/logger');
 const errorHandler = require('./middleware/errorHandler');
+const { invalidateCacheOnWrite } = require('./middleware/adminResponseCache');
 const Hostel = require('./models/Hostel');
 
 // Load environment variables
@@ -36,10 +37,11 @@ app.use(cors({
     return callback(new Error(`CORS policy violation: origin ${origin} not allowed`));
   },
   credentials: true,
-  exposedHeaders: ['Content-Disposition', 'Content-Length', 'X-Report-Row-Count', 'X-Report-Truncated']
+  exposedHeaders: ['Content-Disposition', 'Content-Length', 'X-Report-Row-Count', 'X-Report-Truncated', 'X-Cache']
 }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use('/api', invalidateCacheOnWrite);
 
 // HTTP Request logging stream to Winston (disabled by default in production to avoid log flooding)
 if (process.env.ENABLE_REQUEST_LOGS === 'true') {

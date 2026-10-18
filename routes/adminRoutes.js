@@ -7,6 +7,7 @@ const adminDataController = require('../controllers/adminDataController');
 const analyticsDashboardController = require('../controllers/analyticsDashboardController');
 const emailController = require('../controllers/emailController');
 const { protect, authorize, isAdminLevel, isFounder, checkPasswordChange } = require('../middleware/auth');
+const { cacheResponse, clearAllCache } = require('../middleware/adminResponseCache');
 
 const { loginLimiter, forgotPasswordLimiter, resetPasswordLimiter } = require('../middleware/rateLimiter');
 const router = express.Router();
@@ -29,13 +30,18 @@ router.use(protect);
 router.post('/change-password', authController.changePassword);
 router.use(checkPasswordChange);
 
+router.post('/cache/clear', isAdminLevel, (req, res) => {
+  const clearedEntries = clearAllCache();
+  res.status(200).json({ success: true, message: 'Admin response cache cleared', clearedEntries });
+});
+
 // Create admin (founder and superadmin only)
 router.post('/create-admin', authorize('founder', 'superadmin'), authController.createAdmin);
 router.post('/create-user', isAdminLevel, userAdminController.createUserAccount);
 router.post('/users/create-stream', isAdminLevel, userAdminController.createUserAccountStream);
 router.post('/emails/marketing', authorize('founder', 'superadmin'), emailController.sendMarketingEmail);
 router.post('/emails/support/:supportMessageId/reply', isAdminLevel, emailController.sendSupportReply);
-router.get('/users', isAdminLevel, userAdminController.getUsers);
+router.get('/users', isAdminLevel, cacheResponse, userAdminController.getUsers);
 router.put('/users/:userId', isAdminLevel, userAdminController.updateUser);
 router.get('/users/:userId', isAdminLevel, userAdminController.getUser);
 router.patch('/users/:userId', isAdminLevel, userAdminController.updateUserProfile);
@@ -44,20 +50,20 @@ router.patch('/users/:userId/active', isAdminLevel, userAdminController.setUserA
 router.post('/users/:userId/force-password-reset', isAdminLevel, userAdminController.forcePasswordReset);
 
 // Shared public-backend collections
-router.get('/submitted-hostels', isAdminLevel, adminDataController.listSubmissions);
+router.get('/submitted-hostels', isAdminLevel, cacheResponse, adminDataController.listSubmissions);
 router.get('/submitted-hostels/:id', isAdminLevel, adminDataController.getSubmission);
 router.post('/submitted-hostels/:id/message', isAdminLevel, emailController.sendSubmissionMessage);
 router.post('/submitted-hostels/:id/approve', isAdminLevel, adminDataController.approveSubmission);
 router.post('/submitted-hostels/:id/reject', isAdminLevel, adminDataController.rejectSubmission);
 router.get('/subscribers/export', authorize('admin', 'superadmin', 'founder'), adminDataController.exportSubscribers);
-router.get('/subscribers', isAdminLevel, adminDataController.listSubscribers);
+router.get('/subscribers', isAdminLevel, cacheResponse, adminDataController.listSubscribers);
 router.get('/subscribers/:id', isAdminLevel, adminDataController.getSubscriber);
 router.delete('/subscribers/:id', authorize('superadmin', 'founder'), adminDataController.deleteSubscriber);
-router.get('/support-messages', isAdminLevel, adminDataController.listSupportMessages);
+router.get('/support-messages', isAdminLevel, cacheResponse, adminDataController.listSupportMessages);
 router.get('/support-messages/:id', isAdminLevel, adminDataController.getSupportMessage);
 router.patch('/support-messages/:id/status', isAdminLevel, adminDataController.updateSupportStatus);
 router.delete('/support-messages/:id', authorize('superadmin', 'founder'), adminDataController.deleteSupportMessage);
-router.get('/bookings', isAdminLevel, adminDataController.listBookings);
+router.get('/bookings', isAdminLevel, cacheResponse, adminDataController.listBookings);
 router.get('/analytics-dashboard', isAdminLevel, analyticsDashboardController.getAnalyticsDashboard);
 router.get('/visits/summary', isAdminLevel, adminDataController.getVisitSummary);
 router.get('/visits', isAdminLevel, adminDataController.listVisits);
@@ -103,6 +109,6 @@ router.get('/lookup-user', isAdminLevel, hostelAdminController.lookupUserByEmail
 
 // System logs and stats
 router.get('/logs', isAdminLevel, dashboardController.getLogs);
-router.get('/stats', isAdminLevel, dashboardController.getDashboardStats);
+router.get('/stats', isAdminLevel, cacheResponse, dashboardController.getDashboardStats);
 
 module.exports = router;
