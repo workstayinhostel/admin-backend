@@ -60,7 +60,7 @@ exports.getDashboardStats = async (req, res) => {
       Booking.countDocuments(),
       Hostel.countDocuments({ isApproved: false }),
       Booking.countDocuments({ status: 'pending' }),
-      Hostel.countDocuments({ isApproved: true }),
+      Hostel.countDocuments({ isVerified: true }),
       SupportMessage.countDocuments({ status: 'new' }),
       Subscriber.countDocuments(),
       SubmittedHostel.countDocuments()

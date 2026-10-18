@@ -656,7 +656,7 @@ exports.getDashboardStats = async (req, res) => {
       totalBookings: await Booking.countDocuments(),
       pendingHostels: await Hostel.countDocuments({ isApproved: false }),
       pendingBookings: await Booking.countDocuments({ status: 'pending' }),
-      verifiedHostels: await Hostel.countDocuments({ isApproved: true })
+      verifiedHostels: await Hostel.countDocuments({ isVerified: true })
     };
     res.status(200).json({ success: true, stats });
   } catch (error) {
