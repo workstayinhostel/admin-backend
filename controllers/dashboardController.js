@@ -1,6 +1,9 @@
 const User = require('../models/User');
 const Hostel = require('../models/Hostel');
 const Booking = require('../models/Booking');
+const SubmittedHostel = require('../models/SubmittedHostel');
+const Subscriber = require('../models/Subscriber');
+const SupportMessage = require('../models/SupportMessage');
 const Log = require('../models/Log');
 const logger = require('../config/logger');
 const { getLogFetchOptions } = require('../utils/adminHelpers');
@@ -41,13 +44,37 @@ exports.getLogs = async (req, res) => {
 
 exports.getDashboardStats = async (req, res) => {
   try {
+    const [
+      totalUsers,
+      totalHostels,
+      totalBookings,
+      pendingHostels,
+      pendingBookings,
+      verifiedHostels,
+      supportMessages,
+      totalSubscribers,
+      totalSubmittedHostels
+    ] = await Promise.all([
+      User.countDocuments(),
+      Hostel.countDocuments(),
+      Booking.countDocuments(),
+      Hostel.countDocuments({ isApproved: false }),
+      Booking.countDocuments({ status: 'pending' }),
+      Hostel.countDocuments({ isApproved: true }),
+      SupportMessage.countDocuments({ status: 'new' }),
+      Subscriber.countDocuments(),
+      SubmittedHostel.countDocuments()
+    ]);
     const stats = {
-      totalUsers: await User.countDocuments(),
-      totalHostels: await Hostel.countDocuments(),
-      totalBookings: await Booking.countDocuments(),
-      pendingHostels: await Hostel.countDocuments({ isApproved: false }),
-      pendingBookings: await Booking.countDocuments({ status: 'pending' }),
-      verifiedHostels: await Hostel.countDocuments({ isApproved: true })
+      totalUsers,
+      totalHostels,
+      totalBookings,
+      pendingHostels,
+      pendingBookings,
+      verifiedHostels,
+      supportMessages,
+      totalSubscribers,
+      totalSubmittedHostels
     };
     res.status(200).json({ success: true, stats });
   } catch (error) {
