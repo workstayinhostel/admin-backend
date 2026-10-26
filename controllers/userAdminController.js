@@ -279,6 +279,10 @@ exports.updateUser = async (req, res) => {
 
 exports.getUser = async (req, res) => {
   try {
+    if (String(req.user._id) !== req.params.userId.toLowerCase()) {
+      return res.status(403).json({ success: false, message: 'You can only access your own profile' });
+    }
+
     const user = await User.findById(req.params.userId)
       .select('firstName lastName email phone role isVerified isActive associatedHostels savedHostels studentInfo hostelOwnerInfo emailNotificationsEnabled authProvider googleId profilePicture lastPasswordChangeAt lastLogin forcePasswordChange remarks tokenVersion loginCount createdAt updatedAt')
       .populate('associatedHostels', 'name hostelCode type');
