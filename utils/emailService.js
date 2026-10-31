@@ -1,33 +1,61 @@
-const { Resend } = require('resend');
+const nodemailer = require('nodemailer');
 const logger = require('../config/logger');
 
 const normalizeEnvValue = (value) => (typeof value === 'string' ? value.trim() : '');
 
 const getResendConfig = (env = process.env) => {
   const apiKey = normalizeEnvValue(env.RESEND_API_KEY || env.RESEND_PASSWORD);
-  const fromEmail = normalizeEnvValue(env.RESEND_FROM_EMAIL);
-  const fromName = normalizeEnvValue(env.RESEND_FROM_NAME) || 'Stay In Hostel';
+  const fromEmail = normalizeEnvValue(env.RESEND_FROM_EMAIL) || 'no-reply@admin.stayinhostel.com';
+  const fromName = normalizeEnvValue(env.RESEND_FROM_NAME) || 'SIH ADMIN';
+  const host = normalizeEnvValue(env.RESEND_HOST) || 'smtp.resend.com';
+  const configuredPort = normalizeEnvValue(env.RESEND_PORT) || '587';
+  const port = Number(configuredPort);
   const placeholderValues = ['your_resend_api_key', 'your_api_key', 'changeme', 'replace_me'];
   const normalizedKey = apiKey.toLowerCase();
   const hasApiKey = Boolean(apiKey) && !placeholderValues.includes(normalizedKey);
-  const hasFromEmail = Boolean(fromEmail);
+  const hasValidSmtpConfig = Boolean(host) && Number.isInteger(port) && port > 0 && port <= 65535;
 
   return {
     apiKey,
-    fromEmail: fromEmail || 'noreply@stayinhostel.com',
+    fromEmail,
     fromName,
-    hasValidConfig: hasApiKey && hasFromEmail,
-    reason: hasApiKey ? (hasFromEmail ? null : 'missing_from_email') : 'missing_or_invalid_api_key'
+    host,
+    port,
+    secure: port === 465,
+    hasValidConfig: hasApiKey && Boolean(fromEmail) && hasValidSmtpConfig,
+    reason: !hasApiKey
+      ? 'missing_or_invalid_api_key'
+      : !fromEmail
+        ? 'missing_from_email'
+        : !hasValidSmtpConfig
+          ? 'invalid_smtp_config'
+          : null
   };
 };
 
 const resendConfig = getResendConfig();
-const resend = resendConfig.hasValidConfig ? new Resend(resendConfig.apiKey) : null;
+const transporter = resendConfig.hasValidConfig
+  ? nodemailer.createTransport({
+      host: resendConfig.host,
+      port: resendConfig.port,
+      secure: resendConfig.secure,
+      requireTLS: !resendConfig.secure,
+      auth: {
+        user: 'resend',
+        pass: resendConfig.apiKey
+      }
+    })
+  : null;
 
 if (resendConfig.hasValidConfig) {
-  logger.info('Resend HTTP API client initialized successfully');
+  logger.info('Resend SMTP transport initialized successfully');
 } else {
-  logger.warn(`Resend email service is disabled: ${resendConfig.reason === 'missing_from_email' ? 'Set RESEND_FROM_EMAIL.' : 'Set a valid RESEND_API_KEY in the environment.'}`);
+  const configurationHint = {
+    missing_from_email: 'Set RESEND_FROM_EMAIL.',
+    invalid_smtp_config: 'Set a valid RESEND_HOST and RESEND_PORT.',
+    missing_or_invalid_api_key: 'Set a valid RESEND_API_KEY in the environment.'
+  };
+  logger.warn(`Resend email service is disabled: ${configurationHint[resendConfig.reason]}`);
 }
 
 /**
@@ -39,7 +67,7 @@ if (resendConfig.hasValidConfig) {
  */
 const sendEmail = async (to, subject, html) => {
   try {
-    if (!resendConfig.hasValidConfig || !resend) {
+    if (!resendConfig.hasValidConfig || !transporter) {
       const reason = resendConfig.reason || 'missing_or_invalid_api_key';
       logger.warn(`Email not sent to ${to}: ${reason}`);
       return { success: false, error: 'Resend email service is not configured correctly.' };
@@ -47,19 +75,19 @@ const sendEmail = async (to, subject, html) => {
 
     const fromField = `${resendConfig.fromName} <${resendConfig.fromEmail}>`;
 
-    const data = await resend.emails.send({
+    const info = await transporter.sendMail({
       from: fromField,
-      to: [to],
+      to,
       subject,
       html
     });
 
-    logger.info(`Email sent successfully to ${to}`, { id: data.id || data.data?.id });
-    return { success: true, messageId: data.id || data.data?.id };
+    logger.info(`Email sent successfully to ${to}`, { id: info.messageId });
+    return { success: true, messageId: info.messageId };
   } catch (error) {
-    const errorMessage = error?.body?.error?.message || error?.message || 'Unknown Resend error';
-    logger.error(`Failed to send email to ${to}:`, { message: errorMessage, status: error?.status });
-    return { success: false, error: errorMessage, status: error?.status };
+    const errorMessage = error?.message || 'Unknown Resend SMTP error';
+    logger.error(`Failed to send email to ${to}:`, { message: errorMessage, status: error?.responseCode });
+    return { success: false, error: errorMessage, status: error?.responseCode };
   }
 };
 
@@ -103,5 +131,5 @@ module.exports = {
   sendBulkEmail,
   sendTemplateEmail,
   getResendConfig,
-  transporter: null
+  transporter
 };
