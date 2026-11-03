@@ -94,7 +94,10 @@ exports.createLandmark = async (req, res) => {
     }
     const landmark = await Landmark.create({
       ...fields,
-      coordinates: { type: 'Point', coordinates }
+      location: {
+        ...fields.location,
+        coordinates: { type: 'Point', coordinates }
+      }
     });
 
     res.status(201).json({ success: true, landmark });
@@ -183,17 +186,19 @@ exports.updateLandmark = async (req, res) => {
         error.statusCode = 422;
         throw error;
       }
-      landmark.coordinates = { type: 'Point', coordinates };
+      landmark.location.coordinates = { type: 'Point', coordinates };
     }
 
     if (fields.name !== undefined) {
       landmark.name = fields.name;
     }
     if (fields.location) {
-      landmark.location = {
-        city: fields.location.city !== undefined ? fields.location.city : landmark.location.city,
-        country: fields.location.country !== undefined ? fields.location.country : landmark.location.country
-      };
+      if (fields.location.city !== undefined) {
+        landmark.location.city = fields.location.city;
+      }
+      if (fields.location.country !== undefined) {
+        landmark.location.country = fields.location.country;
+      }
     }
     if (fields.googleMapsUrl !== undefined) {
       landmark.googleMapsUrl = fields.googleMapsUrl;

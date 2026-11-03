@@ -9,12 +9,10 @@ const logger = require('./config/logger');
 const errorHandler = require('./middleware/errorHandler');
 const { invalidateCacheOnWrite } = require('./middleware/adminResponseCache');
 const Hostel = require('./models/Hostel');
+const Landmark = require('./models/Landmark');
 
 // Load environment variables
 dotenv.config();
-
-// Connect to MongoDB Database
-connectDB();
 
 const app = express();
 
@@ -96,18 +94,30 @@ const deactivateExpiredHostels = async () => {
   }
 };
 
-const server = app.listen(PORT, () => {
-  logger.info(`StayInHostel Admin Server running on port ${PORT} in [${process.env.NODE_ENV || 'development'}] mode`);
-  deactivateExpiredHostels();
-  setInterval(deactivateExpiredHostels, 24 * 60 * 60 * 1000);
-});
+let server;
 
-server.on('error', (err) => {
-  if (err.code === 'EADDRINUSE') {
-    logger.error(`Port ${PORT} is already in use. Please stop the other process or change PORT in .env.`);
-  } else {
-    logger.error('Server startup error:', err);
-  }
+const startServer = async () => {
+  await connectDB();
+  await Landmark.initializeGeoIndex();
+
+  server = app.listen(PORT, () => {
+    logger.info(`StayInHostel Admin Server running on port ${PORT} in [${process.env.NODE_ENV || 'development'}] mode`);
+    deactivateExpiredHostels();
+    setInterval(deactivateExpiredHostels, 24 * 60 * 60 * 1000);
+  });
+
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      logger.error(`Port ${PORT} is already in use. Please stop the other process or change PORT in .env.`);
+    } else {
+      logger.error('Server startup error:', err);
+    }
+    process.exit(1);
+  });
+};
+
+startServer().catch((error) => {
+  logger.error('Server startup error:', error);
   process.exit(1);
 });
 
