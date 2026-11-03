@@ -21,6 +21,9 @@ const LogSchema = new mongoose.Schema({
       'hostel_unpublished',
       'hostel_verified',
       'hostel_rejected',
+      'landmark_created',
+      'landmark_updated',
+      'landmark_deleted',
       'booking_created',
       'booking_confirmed',
       'booking_cancelled',
@@ -59,7 +62,7 @@ const LogSchema = new mongoose.Schema({
   // Resource Information
   resourceType: {
     type: String,
-    enum: ['user', 'hostel', 'booking', 'rating', 'admin', 'system', 'submittedHostel', 'subscriber', 'supportMessage', 'visit'],
+    enum: ['user', 'hostel', 'landmark', 'booking', 'rating', 'admin', 'system', 'submittedHostel', 'subscriber', 'supportMessage', 'visit'],
     required: true
   },
   resourceId: mongoose.Schema.Types.ObjectId,

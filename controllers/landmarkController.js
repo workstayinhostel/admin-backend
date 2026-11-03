@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const Landmark = require('../models/Landmark');
 const logger = require('../config/logger');
+const { createAuditLog } = require('../utils/adminHelpers');
 const { extractCoordinatesFromGoogleMaps, validateGoogleMapsUrl } = require('../utils/googleMaps');
 
 const MAX_PAGE_SIZE = 100;
@@ -83,6 +84,15 @@ const validateLandmarkId = (id) => {
 
 const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+const createLandmarkAuditLog = (req, details) => createAuditLog({
+  user: req.user._id,
+  userRole: req.user.role,
+  resourceType: 'landmark',
+  ipAddress: req.ip,
+  userAgent: req.get('user-agent'),
+  ...details
+});
+
 exports.createLandmark = async (req, res) => {
   try {
     const fields = validateLandmarkBody(req.body);
@@ -98,6 +108,14 @@ exports.createLandmark = async (req, res) => {
         ...fields.location,
         coordinates: { type: 'Point', coordinates }
       }
+    });
+
+    await createLandmarkAuditLog(req, {
+      action: 'landmark_created',
+      resourceId: landmark._id,
+      resourceName: landmark.name,
+      changes: { after: landmark.toObject() },
+      description: `Created landmark ${landmark.name}`
     });
 
     res.status(201).json({ success: true, landmark });
@@ -179,6 +197,7 @@ exports.updateLandmark = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Landmark not found' });
     }
 
+    const before = landmark.toObject();
     if (fields.googleMapsUrl && fields.googleMapsUrl !== landmark.googleMapsUrl) {
       const coordinates = await extractCoordinatesFromGoogleMaps(fields.googleMapsUrl);
       if (coordinates[0] === 0 && coordinates[1] === 0) {
@@ -205,6 +224,19 @@ exports.updateLandmark = async (req, res) => {
     }
 
     await landmark.save();
+    const after = landmark.toObject();
+    const changedFields = Object.keys(fields);
+    if (fields.googleMapsUrl !== undefined && fields.googleMapsUrl !== before.googleMapsUrl) {
+      changedFields.push('location.coordinates');
+    }
+    await createLandmarkAuditLog(req, {
+      action: 'landmark_updated',
+      resourceId: landmark._id,
+      resourceName: landmark.name,
+      changes: { before, after, fieldsChanged: changedFields },
+      description: `Updated landmark ${landmark.name}`
+    });
+
     res.status(200).json({ success: true, landmark });
   } catch (error) {
     sendControllerError(res, error, 'Update landmark error');
@@ -218,6 +250,14 @@ exports.deleteLandmark = async (req, res) => {
     if (!landmark) {
       return res.status(404).json({ success: false, message: 'Landmark not found' });
     }
+    const deletedLandmark = landmark.toObject();
+    await createLandmarkAuditLog(req, {
+      action: 'landmark_deleted',
+      resourceId: landmark._id,
+      resourceName: landmark.name,
+      changes: { before: deletedLandmark },
+      description: `Deleted landmark ${landmark.name}`
+    });
     res.status(200).json({ success: true, message: 'Landmark deleted successfully' });
   } catch (error) {
     sendControllerError(res, error, 'Delete landmark error');
