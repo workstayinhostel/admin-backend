@@ -1,5 +1,4 @@
 const mongoose = require('mongoose');
-const axios = require('axios');
 const Hostel = require('../models/Hostel');
 const Booking = require('../models/Booking');
 const Review = require('../models/Review');
@@ -11,6 +10,7 @@ const { deleteFile, uploadMultipleFiles } = require('../config/supabase');
 const { normalizeHostelType, getHostelPermission, createAuditLog, isAdminRole } = require('../utils/adminHelpers');
 const { generateHostelCode } = require('../utils/hostelHelpers');
 const { setEventStreamHeaders, writeEvent } = require('../utils/sse');
+const { extractCoordinatesFromGoogleMaps } = require('../utils/googleMaps');
 
 const resolveHostelByIdentifier = async (identifier) => {
   if (!identifier) return null;
@@ -28,73 +28,6 @@ const resolveHostelByIdentifier = async (identifier) => {
       $options: 'i'
     }
   });
-};
-
-/**
- * Extract coordinates from a Google Maps URL, including short URLs and the common
- * Google Maps patterns that encode coordinates as query params or !3d / !4d markers.
- */
-const extractCoordinatesFromGoogleMaps = async (link) => {
-  if (!link) return [0, 0];
-
-  let targetUrl = String(link).trim();
-  if (!targetUrl) return [0, 0];
-  let responseBody = '';
-
-  const isShortGoogleLink = /(?:maps\.app\.goo\.gl|goo\.gl\/maps)/i.test(targetUrl);
-
-  if (isShortGoogleLink) {
-    try {
-      const response = await axios.get(targetUrl, {
-        maxRedirects: 10,
-        validateStatus: (status) => status >= 200 && status < 400,
-        timeout: 8000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0'
-        }
-      });
-
-      targetUrl = response.request?.res?.responseUrl || response.request?.responseUrl || targetUrl;
-      responseBody = typeof response.data === 'string' ? response.data : '';
-    } catch (error) {
-      logger.warn(`Unable to resolve shortened Google Maps link: ${error.message}`);
-    }
-  }
-
-  // Mobile Maps pages often keep coordinates in URL-encoded !2d/!3d markers
-  // in the response body instead of putting them in the final URL.
-  const patterns = [
-    { regex: /!3d(-?\d{1,3}(?:\.\d+)?)!4d(-?\d{1,3}(?:\.\d+)?)/i, order: 'lat-lng' },
-    { regex: /!2d(-?\d{1,3}(?:\.\d+)?)(?:![^!]+)*?!3d(-?\d{1,3}(?:\.\d+)?)/i, order: 'lng-lat' },
-    { regex: /!3d(-?\d{1,3}(?:\.\d+)?)(?:![^!]+)*?!2d(-?\d{1,3}(?:\.\d+)?)/i, order: 'lat-lng' },
-    { regex: /[?&](?:q|query|ll|center)=(-?\d{1,3}(?:\.\d+)?),\s*(-?\d{1,3}(?:\.\d+)?)/i, order: 'lat-lng' },
-    { regex: /@(-?\d{1,3}(?:\.\d+)?),\s*(-?\d{1,3}(?:\.\d+)?)(?:,[-\d.]+)?(?:[/?#]|$)/i, order: 'lat-lng' },
-    { regex: /(?:lat|latitude)[=,:](-?\d{1,3}(?:\.\d+)?)[^\d-]*?(?:lng|lon|longitude)[=,:](-?\d{1,3}(?:\.\d+)?)/i, order: 'lat-lng' }
-  ];
-
-  for (const searchableText of [targetUrl, responseBody]) {
-    const normalizedText = searchableText.replace(/%21/g, '!').replace(/%2C/gi, ',');
-
-    for (const { regex, order } of patterns) {
-      const match = normalizedText.match(regex);
-      if (!match) continue;
-
-      const lat = Number(order === 'lng-lat' ? match[2] : match[1]);
-      const lng = Number(order === 'lng-lat' ? match[1] : match[2] || match[1]);
-
-      if (
-        Number.isFinite(lat) &&
-        Number.isFinite(lng) &&
-        lat >= -90 && lat <= 90 &&
-        lng >= -180 && lng <= 180
-      ) {
-        // GeoJSON expects [longitude, latitude]
-        return [lng, lat];
-      }
-    }
-  }
-
-  return [0, 0];
 };
 
 const hasValidCoordinates = (coordinates) => {

@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 const Landmark = require('../models/Landmark');
 const logger = require('../config/logger');
-const { resolveGoogleMapsCoordinates } = require('../utils/googleMaps');
+const { extractCoordinatesFromGoogleMaps, validateGoogleMapsUrl } = require('../utils/googleMaps');
 
 const MAX_PAGE_SIZE = 100;
 const MAX_PAGE_NUMBER = 1000000;
@@ -37,6 +37,12 @@ const validateLandmarkBody = (body, isUpdate = false) => {
   }
   if (!isUpdate || body.googleMapsUrl !== undefined) {
     fields.googleMapsUrl = getRequiredString(body.googleMapsUrl, 'googleMapsUrl', 2048);
+    try {
+      validateGoogleMapsUrl(fields.googleMapsUrl);
+    } catch (error) {
+      error.statusCode = 400;
+      throw error;
+    }
   }
   if (!isUpdate || body.location !== undefined) {
     if (!body.location || typeof body.location !== 'object' || Array.isArray(body.location)) {
@@ -80,13 +86,15 @@ const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 exports.createLandmark = async (req, res) => {
   try {
     const fields = validateLandmarkBody(req.body);
-    const coordinates = await resolveGoogleMapsCoordinates(fields.googleMapsUrl);
+    const coordinates = await extractCoordinatesFromGoogleMaps(fields.googleMapsUrl);
+    if (coordinates[0] === 0 && coordinates[1] === 0) {
+      const error = new Error('No coordinates could be extracted from this Google Maps link');
+      error.statusCode = 422;
+      throw error;
+    }
     const landmark = await Landmark.create({
       ...fields,
-      coordinates: {
-        type: 'Point',
-        coordinates: [coordinates.longitude, coordinates.latitude]
-      }
+      coordinates: { type: 'Point', coordinates }
     });
 
     res.status(201).json({ success: true, landmark });
@@ -169,11 +177,13 @@ exports.updateLandmark = async (req, res) => {
     }
 
     if (fields.googleMapsUrl && fields.googleMapsUrl !== landmark.googleMapsUrl) {
-      const coordinates = await resolveGoogleMapsCoordinates(fields.googleMapsUrl);
-      landmark.coordinates = {
-        type: 'Point',
-        coordinates: [coordinates.longitude, coordinates.latitude]
-      };
+      const coordinates = await extractCoordinatesFromGoogleMaps(fields.googleMapsUrl);
+      if (coordinates[0] === 0 && coordinates[1] === 0) {
+        const error = new Error('No coordinates could be extracted from this Google Maps link');
+        error.statusCode = 422;
+        throw error;
+      }
+      landmark.coordinates = { type: 'Point', coordinates };
     }
 
     if (fields.name !== undefined) {
