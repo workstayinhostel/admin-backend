@@ -1,7 +1,31 @@
 const mongoose = require('mongoose');
+const { normalizeMealSchedule } = require('../utils/mealSchedule');
+
+const mealSlotSchema = new mongoose.Schema({
+  from: { type: String, required: true, trim: true, match: /^(0?[1-9]|1[0-2]):[0-5]\d (AM|PM)$/ },
+  to: { type: String, required: true, trim: true, match: /^(0?[1-9]|1[0-2]):[0-5]\d (AM|PM)$/ },
+  dishes: { type: [{ type: String, trim: true }], default: [] }
+}, { _id: false });
+
+const mealScheduleDaySchema = new mongoose.Schema({
+  breakfast: { type: mealSlotSchema, required: true },
+  mealLunch: { type: mealSlotSchema, required: true },
+  snacks: { type: mealSlotSchema, required: true },
+  dinner: { type: mealSlotSchema, required: true }
+}, { _id: false });
+
+const mealScheduleSchema = new mongoose.Schema({
+  Sunday: { type: mealScheduleDaySchema, required: true },
+  Monday: { type: mealScheduleDaySchema, required: true },
+  Tuesday: { type: mealScheduleDaySchema, required: true },
+  Wednesday: { type: mealScheduleDaySchema, required: true },
+  Thursday: { type: mealScheduleDaySchema, required: true },
+  Friday: { type: mealScheduleDaySchema, required: true },
+  Saturday: { type: mealScheduleDaySchema, required: true }
+}, { _id: false });
 
 const hostelSchema = new mongoose.Schema({
-  name: { type: String, required: true },
+  name: { type: String, required: true, trim: true, maxlength: 120 },
   owner: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   type: { type: String, enum: ['boys', 'girls', 'pg'], required: true },
   hostelCode: { type: String, unique: true, immutable: true },
@@ -38,14 +62,26 @@ const hostelSchema = new mongoose.Schema({
       name: String,
       totalBeds: Number,
       availableBeds: Number
-    }]
+    }],
+    availableRooms: { type: Number, default: 0 }
   }],
+
+  mealSchedule: {
+    type: mealScheduleSchema,
+    default: () => normalizeMealSchedule()
+  },
 
   foodItems: [{
     name: { type: String, required: true },
     daysServing: [{ type: String }]
   }],
   foodMenuDescription: { type: String },
+
+  feeStructure: {
+    bookingFee: { type: Number, default: 0 },
+    monthlyFee: { type: Number, default: 0 },
+    deposit: { type: Number, default: 0 }
+  },
 
   facilities: [{
     title: { type: String, required: true },
@@ -64,6 +100,7 @@ const hostelSchema = new mongoose.Schema({
   isVerified: { type: Boolean, default: false },
   isLive: { type: Boolean, default: true },
   isApproved: { type: Boolean, default: true },
+  isPending: { type: Boolean, default: false },
 
   isSponsored: { type: Boolean, default: false },
   isSponsorFeatured: { type: Boolean, default: false },

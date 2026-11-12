@@ -4,3 +4,6 @@ node_modules/
 logs/
 *.log
 scripts/
+!scripts/
+scripts/*
+!scripts/backfillMealSchedules.js

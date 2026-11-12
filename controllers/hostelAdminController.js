@@ -11,6 +11,7 @@ const { normalizeHostelType, getHostelPermission, createAuditLog, isAdminRole } 
 const { generateHostelCode } = require('../utils/hostelHelpers');
 const { setEventStreamHeaders, writeEvent } = require('../utils/sse');
 const { extractCoordinatesFromGoogleMaps } = require('../utils/googleMaps');
+const { normalizeMealSchedule } = require('../utils/mealSchedule');
 
 const resolveHostelByIdentifier = async (identifier) => {
   if (!identifier) return null;
@@ -100,7 +101,8 @@ const normalizeRoomTypes = (roomTypes) => {
           totalBeds: Number(config?.totalBeds ?? 0),
           availableBeds: Number(config?.availableBeds ?? 0)
         }))
-      : []
+      : [],
+    availableRooms: Number(item?.availableRooms ?? 0)
   })).filter(item => item.roomType);
 };
 
@@ -254,6 +256,7 @@ const enrichHostelWithMetrics = async (hostel) => {
 
   return {
     ...data,
+    mealSchedule: normalizeMealSchedule(data.mealSchedule),
     averageRating: Number(average),
     ratings: {
       average: Number(average),
@@ -421,7 +424,8 @@ const createHostel = async (req, onProgress = () => {}) => {
         name: config.name || 'Bed',
         totalBeds: Number(config.totalBeds || 0),
         availableBeds: Number(config.availableBeds || 0)
-      })) : []
+      })) : [],
+      availableRooms: Number(item.availableRooms ?? 0)
     })) : [];
 
     const foodItems = buildFoodItems(payload);
@@ -479,6 +483,8 @@ const createHostel = async (req, onProgress = () => {}) => {
       email: payload.email || (owner ? owner.email : undefined),
       whatsappNumber: payload.whatsappNumber || payload.phone,
       roomTypes: normalizedRoomTypes,
+      mealSchedule: normalizeMealSchedule(payload.mealSchedule),
+      feeStructure: payload.feeStructure,
       foodItems,
       foodMenuDescription: payload.foodMenuDescription || (foodItems.length ? foodItems.map(item => `${item.name}: ${item.daysServing.join(', ')}`).join(' | ') : ''),
       facilities: normalizedFacilities,
@@ -486,6 +492,7 @@ const createHostel = async (req, onProgress = () => {}) => {
       isApproved: true,
       isVerified: false,
       isLive: true,
+      isPending: payload.isPending,
       verificationStatus: {
         status: 'pending'
       }
@@ -785,13 +792,13 @@ exports.updateHostel = async (req, res) => {
     const before = hostel.toObject();
     const changedFields = [];
     const ownerUpdatable = new Set([
-      'name', 'type', 'description', 'phone', 'email', 'whatsappNumber', 'foodItems', 'foodMenuDescription',
+      'name', 'type', 'description', 'phone', 'email', 'whatsappNumber', 'foodItems', 'foodMenuDescription', 'mealSchedule', 'feeStructure',
       'location', 'roomTypes', 'facilities', 'images', 'addressText', 'googleMapLink', 'coordinates',
       'averageRating', 'ratingCount', 'totalBookings', 'viewCount', 'foodMenu', 'foodMenuDescription'
     ]);
     const adminOnlyUpdatable = new Set([
       'hostelCode', 'rank', 'isSponsored', 'isSponsorFeatured', 'sponsorPackage', 'isApproved', 'isVerified',
-      'isLive', 'verificationStatus', 'expiryDate', 'activeDate', 'isDeleted',
+      'isLive', 'isPending', 'verificationStatus', 'expiryDate', 'activeDate', 'isDeleted',
       'sponsorExpiresAt', 'verificationStatus.status', 'verificationStatus.verifiedBy', 'verificationStatus.verificationDate', 'verificationStatus.rejectionReason'
     ]);
     const blockedFields = new Set(['_id', 'id', 'hostelCode', '__v', 'createdAt', 'updatedAt']);
@@ -849,6 +856,13 @@ exports.updateHostel = async (req, res) => {
       if (field === 'foodItems') {
         if (!ownerUpdatable.has(field) && !isAdmin) return res.status(403).json({ success: false, message: `You cannot edit ${field}` });
         hostel.foodItems = buildFoodItems({ foodItems: value });
+        changedFields.push(field);
+        continue;
+      }
+
+      if (field === 'mealSchedule') {
+        if (!ownerUpdatable.has(field) && !isAdmin) return res.status(403).json({ success: false, message: `You cannot edit ${field}` });
+        hostel.mealSchedule = normalizeMealSchedule(value, hostel.mealSchedule?.toObject ? hostel.mealSchedule.toObject() : hostel.mealSchedule);
         changedFields.push(field);
         continue;
       }

@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "create-admin": "node scripts/createadmin.js"
+    "create-admin": "node scripts/createadmin.js",
+    "backfill-meal-schedules": "node scripts/backfillMealSchedules.js"
   },
   "keywords": [
     "hostel",
