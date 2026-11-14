@@ -1,6 +1,7 @@
 const Visit = require('../models/Visit');
 
 const SUPPORTED_RANGES = ['today', 'yesterday', 'this_week', 'last_week', 'this_month', 'last_month', 'this_year', 'all'];
+const PAGE_VISIT_RANGES = ['today', 'yesterday', 'this_week', 'last_week'];
 const NEPAL_TIMEZONE = 'Asia/Kathmandu';
 const NEPAL_OFFSET_MS = (5 * 60 + 45) * 60 * 1000;
 const NEPAL_TIMEZONE_LABEL = 'Nepal Time (Kathmandu)';
@@ -118,7 +119,7 @@ const javascriptTimelineKey = (date, bucket) => {
   return dateKey;
 };
 
-const aggregatePeriod = async (period) => {
+const aggregatePeriod = async (period, includeVisitedPages = false) => {
   const match = {};
   if (period.start) {
     match.$expr = { $and: [{ $gte: [eventTime, period.start] }, { $lt: [eventTime, period.end] }] };
@@ -126,7 +127,7 @@ const aggregatePeriod = async (period) => {
 
   const [result] = await Visit.aggregate([
     { $match: match },
-    { $project: { identifier: 1, deviceType: 1, deviceClass, event: eventValue, timelineKey: timelineKey(period.bucket), isVisit, isHeartbeat, heartbeatSeconds } },
+    { $project: { identifier: 1, deviceType: 1, deviceClass, event: eventValue, timelineKey: timelineKey(period.bucket), isVisit, isPageVisit: { $eq: [eventValue, 'page_visit'] }, isHeartbeat, heartbeatSeconds, pageUrl: 1, pageTitle: 1 } },
     { $facet: {
       timeline: [
         { $match: { isVisit: true } },
@@ -149,7 +150,15 @@ const aggregatePeriod = async (period) => {
       heartbeat: [
         { $match: { isHeartbeat: true } },
         { $group: { _id: null, pageHeartbeatTotal: { $sum: { $cond: [{ $eq: ['$event', 'page_heartbeat'] }, '$heartbeatSeconds', 0] } }, appHeartbeatTotal: { $sum: { $cond: [{ $eq: ['$event', 'app_heartbeat'] }, '$heartbeatSeconds', 0] } } } }
-      ]
+      ],
+      ...(includeVisitedPages ? {
+        visitedPages: [
+          { $match: { isPageVisit: true, pageUrl: { $type: 'string', $ne: '' } } },
+          { $group: { _id: '$pageUrl', pageTitle: { $max: '$pageTitle' }, visitTimes: { $sum: 1 } } },
+          { $project: { _id: 0, pageUrl: '$_id', pageTitle: { $ifNull: ['$pageTitle', ''] }, visitTimes: 1 } },
+          { $sort: { visitTimes: -1, pageUrl: 1 } }
+        ]
+      } : {})
     } }
   ]);
 
@@ -158,6 +167,7 @@ const aggregatePeriod = async (period) => {
   return {
     timeline: result?.timeline || [],
     devices: result?.devices || [],
+    ...(includeVisitedPages ? { visitedPages: result?.visitedPages || [] } : {}),
     summary: {
       totalVisits: summary.totalVisits || 0,
       phoneVisits: summary.phoneVisits || 0,
@@ -202,7 +212,8 @@ exports.getAnalyticsDashboard = async (req, res) => {
 
   try {
     const period = getPeriod(range);
-    const current = await aggregatePeriod(period);
+    const includeVisitedPages = PAGE_VISIT_RANGES.includes(range);
+    const current = await aggregatePeriod(period, includeVisitedPages);
     const map = new Map(current.timeline.map((item) => [item.timeKey, item]));
     const lineChart = labelsFor(period, current.timeline).map(({ key, timeLabel }) => {
       const item = map.get(key) || {};
@@ -241,6 +252,7 @@ exports.getAnalyticsDashboard = async (req, res) => {
         lineChart,
         deviceBreakdown: deviceBreakdown(current),
         summary: current.summary,
+        ...(includeVisitedPages ? { visitedPages: current.visitedPages } : {}),
         comparison
       }
     });
