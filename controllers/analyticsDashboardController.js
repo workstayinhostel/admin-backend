@@ -77,6 +77,7 @@ const getPeriod = (range) => {
 
 const eventValue = { $toLower: { $ifNull: ['$event', { $ifNull: ['$eventType', ''] }] } };
 const eventTime = { $ifNull: ['$createdAt', '$hourBucket'] };
+const visitTimestamp = { $ifNull: ['$eventTimestamp', eventTime] };
 const isVisit = { $in: [eventValue, ['page_visit', 'app_visit']] };
 const isHeartbeat = { $in: [eventValue, ['page_heartbeat', 'app_heartbeat']] };
 const operatingSystem = { $toLower: { $ifNull: ['$operatingSystem', ''] } };
@@ -144,7 +145,7 @@ const aggregatePeriod = async (period, includeVisitedPages = false) => {
       isVisit,
       isHeartbeat,
       heartbeatSeconds,
-      ...(includeVisitedPages ? { appName: 1, pageUrl: 1, pageTitle: 1 } : {})
+      ...(includeVisitedPages ? { appName: 1, pageUrl: 1, pageTitle: 1, visitTimestamp } : {})
     } },
     { $facet: {
       timeline: [
@@ -190,6 +191,7 @@ const aggregatePeriod = async (period, includeVisitedPages = false) => {
             },
             pageTitle: { $max: '$pageTitle' },
             visitTimes: { $sum: 1 },
+            lastVisitedAt: { $max: '$visitTimestamp' },
             pageVisitTimes: { $sum: { $cond: [{ $eq: ['$event', 'page_visit'] }, 1, 0] } },
             appVisitTimes: { $sum: { $cond: [{ $eq: ['$event', 'app_visit'] }, 1, 0] } }
           } },
@@ -200,6 +202,7 @@ const aggregatePeriod = async (period, includeVisitedPages = false) => {
             appName: { $ifNull: ['$_id.appName', ''] },
             pageTitle: { $ifNull: ['$pageTitle', { $ifNull: ['$_id.appName', ''] }] },
             visitTimes: 1,
+            lastVisitedAt: 1,
             pageVisitTimes: 1,
             appVisitTimes: 1
           } },
