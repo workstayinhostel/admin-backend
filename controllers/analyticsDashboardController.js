@@ -75,7 +75,7 @@ const getPeriod = (range) => {
   return { start: null, end: null, comparison: null, bucket: 'day' };
 };
 
-const eventValue = { $toLower: { $ifNull: ['$event', ''] } };
+const eventValue = { $toLower: { $ifNull: ['$event', { $ifNull: ['$eventType', ''] }] } };
 const eventTime = { $ifNull: ['$createdAt', '$hourBucket'] };
 const isVisit = { $in: [eventValue, ['page_visit', 'app_visit']] };
 const isHeartbeat = { $in: [eventValue, ['page_heartbeat', 'app_heartbeat']] };
@@ -122,12 +122,30 @@ const javascriptTimelineKey = (date, bucket) => {
 const aggregatePeriod = async (period, includeVisitedPages = false) => {
   const match = {};
   if (period.start) {
-    match.$expr = { $and: [{ $gte: [eventTime, period.start] }, { $lt: [eventTime, period.end] }] };
+    match.hourBucket = {
+      $gte: new Date(period.start.getTime() - 60 * 60 * 1000),
+      $lt: period.end
+    };
   }
 
-  const [result] = await Visit.aggregate([
+  const pipeline = [
     { $match: match },
-    { $project: { identifier: 1, deviceType: 1, deviceClass, event: eventValue, timelineKey: timelineKey(period.bucket), isVisit, isPageVisit: { $eq: [eventValue, 'page_visit'] }, isHeartbeat, heartbeatSeconds, pageUrl: 1, pageTitle: 1 } },
+    ...(period.start ? [{
+      $match: {
+        $expr: { $and: [{ $gte: [eventTime, period.start] }, { $lt: [eventTime, period.end] }] }
+      }
+    }] : []),
+    { $match: { $expr: { $in: [eventValue, ['page_visit', 'app_visit', 'page_heartbeat', 'app_heartbeat']] } } },
+    { $project: {
+      identifier: 1,
+      deviceClass,
+      event: eventValue,
+      timelineKey: timelineKey(period.bucket),
+      isVisit,
+      isHeartbeat,
+      heartbeatSeconds,
+      ...(includeVisitedPages ? { appName: 1, pageUrl: 1, pageTitle: 1 } : {})
+    } },
     { $facet: {
       timeline: [
         { $match: { isVisit: true } },
@@ -145,7 +163,18 @@ const aggregatePeriod = async (period, includeVisitedPages = false) => {
       summary: [
         { $match: { isVisit: true } },
         { $group: { _id: '$identifier', events: { $addToSet: '$event' }, deviceClass: { $first: '$deviceClass' } } },
-        { $group: { _id: null, totalVisits: { $sum: 1 }, phoneVisits: { $sum: { $cond: [{ $eq: ['$deviceClass', 'mobile'] }, 1, 0] } }, desktopVisits: { $sum: { $cond: [{ $eq: ['$deviceClass', 'desktop'] }, 1, 0] } }, totalPageVisits: { $sum: { $cond: [{ $in: ['page_visit', '$events'] }, 1, 0] } }, totalAppVisits: { $sum: { $cond: [{ $in: ['app_visit', '$events'] }, 1, 0] } } } }
+        { $group: {
+          _id: null,
+          totalVisits: { $sum: 1 },
+          phoneVisits: { $sum: { $cond: [{ $eq: ['$deviceClass', 'mobile'] }, 1, 0] } },
+          desktopVisits: { $sum: { $cond: [{ $eq: ['$deviceClass', 'desktop'] }, 1, 0] } },
+          totalPageVisits: { $sum: { $cond: [{ $in: ['page_visit', '$events'] }, 1, 0] } },
+          totalAppVisits: { $sum: { $cond: [{ $in: ['app_visit', '$events'] }, 1, 0] } },
+          phonePageVisits: { $sum: { $cond: [{ $and: [{ $eq: ['$deviceClass', 'mobile'] }, { $in: ['page_visit', '$events'] }] }, 1, 0] } },
+          desktopPageVisits: { $sum: { $cond: [{ $and: [{ $eq: ['$deviceClass', 'desktop'] }, { $in: ['page_visit', '$events'] }] }, 1, 0] } },
+          phoneAppVisits: { $sum: { $cond: [{ $and: [{ $eq: ['$deviceClass', 'mobile'] }, { $in: ['app_visit', '$events'] }] }, 1, 0] } },
+          desktopAppVisits: { $sum: { $cond: [{ $and: [{ $eq: ['$deviceClass', 'desktop'] }, { $in: ['app_visit', '$events'] }] }, 1, 0] } }
+        } }
       ],
       heartbeat: [
         { $match: { isHeartbeat: true } },
@@ -153,14 +182,34 @@ const aggregatePeriod = async (period, includeVisitedPages = false) => {
       ],
       ...(includeVisitedPages ? {
         visitedPages: [
-          { $match: { isPageVisit: true, pageUrl: { $type: 'string', $ne: '' } } },
-          { $group: { _id: '$pageUrl', pageTitle: { $max: '$pageTitle' }, visitTimes: { $sum: 1 } } },
-          { $project: { _id: 0, pageUrl: '$_id', pageTitle: { $ifNull: ['$pageTitle', ''] }, visitTimes: 1 } },
+          { $match: { $or: [{ pageUrl: { $type: 'string', $ne: '' } }, { event: 'app_visit' }] } },
+          { $group: {
+            _id: {
+              pageUrl: { $cond: [{ $and: [{ $eq: [{ $type: '$pageUrl' }, 'string'] }, { $ne: ['$pageUrl', ''] }] }, '$pageUrl', null] },
+              appName: { $cond: [{ $and: [{ $eq: ['$event', 'app_visit'] }, { $or: [{ $eq: [{ $type: '$pageUrl' }, 'missing'] }, { $eq: ['$pageUrl', null] }, { $eq: ['$pageUrl', ''] }] }] }, { $ifNull: ['$appName', 'application'] }, null] }
+            },
+            pageTitle: { $max: '$pageTitle' },
+            visitTimes: { $sum: 1 },
+            pageVisitTimes: { $sum: { $cond: [{ $eq: ['$event', 'page_visit'] }, 1, 0] } },
+            appVisitTimes: { $sum: { $cond: [{ $eq: ['$event', 'app_visit'] }, 1, 0] } }
+          } },
+          { $project: {
+            _id: 0,
+            type: { $cond: [{ $eq: ['$_id.appName', null] }, 'page', 'app'] },
+            pageUrl: { $ifNull: ['$_id.pageUrl', ''] },
+            appName: { $ifNull: ['$_id.appName', ''] },
+            pageTitle: { $ifNull: ['$pageTitle', { $ifNull: ['$_id.appName', ''] }] },
+            visitTimes: 1,
+            pageVisitTimes: 1,
+            appVisitTimes: 1
+          } },
           { $sort: { visitTimes: -1, pageUrl: 1 } }
         ]
       } : {})
     } }
-  ]);
+  ];
+
+  const [result] = await Visit.aggregate(pipeline);
 
   const summary = result?.summary?.[0] || {};
   const heartbeat = result?.heartbeat?.[0] || {};
@@ -174,6 +223,10 @@ const aggregatePeriod = async (period, includeVisitedPages = false) => {
       desktopVisits: summary.desktopVisits || 0,
       totalPageVisits: summary.totalPageVisits || 0,
       totalAppVisits: summary.totalAppVisits || 0,
+      phonePageVisits: summary.phonePageVisits || 0,
+      desktopPageVisits: summary.desktopPageVisits || 0,
+      phoneAppVisits: summary.phoneAppVisits || 0,
+      desktopAppVisits: summary.desktopAppVisits || 0,
       pageHeartbeatTotal: heartbeat.pageHeartbeatTotal || 0,
       appHeartbeatTotal: heartbeat.appHeartbeatTotal || 0
     }
