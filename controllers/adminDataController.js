@@ -38,7 +38,6 @@ exports.listBookings = async (req, res) => {
     const query = {};
 
     if (req.query.status) query.status = req.query.status;
-    if (req.query.paymentStatus) query.paymentStatus = req.query.paymentStatus;
     if (req.query.hostel && mongoose.isValidObjectId(req.query.hostel)) query.hostel = req.query.hostel;
     if (req.query.student && mongoose.isValidObjectId(req.query.student)) query.student = req.query.student;
     if (req.query.hostelOwner && mongoose.isValidObjectId(req.query.hostelOwner)) query.hostelOwner = req.query.hostelOwner;
@@ -49,6 +48,10 @@ exports.listBookings = async (req, res) => {
       query.$or = [
         { bookingCode: { $regex: search, $options: 'i' } },
         { roomType: { $regex: search, $options: 'i' } },
+        { contactName: { $regex: search, $options: 'i' } },
+        { contactNumber: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+        { userEmail: { $regex: search, $options: 'i' } },
         { 'studentDetails.name': { $regex: search, $options: 'i' } },
         { 'studentDetails.email': { $regex: search, $options: 'i' } },
         { 'studentDetails.phone': { $regex: search, $options: 'i' } }
@@ -69,6 +72,49 @@ exports.listBookings = async (req, res) => {
     respondList(res, 'Bookings fetched successfully', data, page, limit, total);
   } catch (error) {
     res.status(500).json({ success: false, message: 'Error fetching bookings' });
+  }
+};
+
+exports.updateBookingStatus = async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({ success: false, message: 'Invalid booking id' });
+    }
+
+    const allowedStatuses = Booking.schema.path('status').enumValues;
+    const requestedStatus = req.body && req.body.status;
+    if (!allowedStatuses.includes(requestedStatus)) {
+      return res.status(400).json({ success: false, message: `Status must be one of: ${allowedStatuses.join(', ')}` });
+    }
+
+    const booking = await Booking.findById(req.params.id);
+    if (!booking) return res.status(404).json({ success: false, message: 'Booking not found' });
+
+    const previousStatus = booking.status;
+    if (previousStatus !== requestedStatus) {
+      booking.status = requestedStatus;
+      await booking.save({ validateModifiedOnly: true });
+      await createAuditLog({
+        user: req.user._id,
+        userRole: req.user.role,
+        action: 'booking_status_changed',
+        resourceType: 'booking',
+        resourceId: booking._id,
+        resourceName: booking.bookingCode,
+        description: `Changed booking ${booking.bookingCode} status from ${previousStatus} to ${booking.status}`,
+        changes: { before: { status: previousStatus }, after: { status: booking.status } },
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent')
+      });
+    }
+
+    res.json({
+      success: true,
+      message: previousStatus === booking.status ? 'Booking status is unchanged' : 'Booking status updated',
+      data: booking
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Error updating booking status' });
   }
 };
 

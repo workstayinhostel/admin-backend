@@ -64,6 +64,7 @@ router.get('/support-messages/:id', isAdminLevel, adminDataController.getSupport
 router.patch('/support-messages/:id/status', isAdminLevel, adminDataController.updateSupportStatus);
 router.delete('/support-messages/:id', authorize('superadmin', 'founder'), adminDataController.deleteSupportMessage);
 router.get('/bookings', isAdminLevel, cacheResponse, adminDataController.listBookings);
+router.patch('/bookings/:id/status', isAdminLevel, adminDataController.updateBookingStatus);
 router.get('/analytics-dashboard', isAdminLevel, analyticsDashboardController.getAnalyticsDashboard);
 router.get('/visits/summary', isAdminLevel, adminDataController.getVisitSummary);
 router.get('/visits', isAdminLevel, adminDataController.listVisits);

@@ -1224,7 +1224,7 @@ exports.getHostelBookingStats = async (req, res) => {
     const { isOwner, isAdmin, canManage } = getHostelPermission(req.user, hostel);
     if (!canManage) return res.status(403).json({ success: false, message: 'You cannot view booking stats for this hostel' });
 
-    const statuses = ['pending', 'confirmed', 'cancelled', 'completed'];
+    const statuses = ['pending', 'contacted', 'confirmed', 'cancelled', 'completed', 'no-show', 'success'];
     const stats = {};
     await Promise.all(statuses.map(async (item) => {
       stats[item] = await Booking.countDocuments({ hostel: hostel._id, status: item });

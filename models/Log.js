@@ -27,6 +27,7 @@ const LogSchema = new mongoose.Schema({
       'booking_created',
       'booking_confirmed',
       'booking_cancelled',
+      'booking_status_changed',
       'user_created',
       'user_updated',
       'user_deleted',

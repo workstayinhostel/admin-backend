@@ -4,7 +4,7 @@ const BookingSchema = new mongoose.Schema({
   bookingCode: {
     type: String,
     unique: true,
-    default: () => `BK${Date.now()}${Math.floor(Math.random() * 1000)}`
+    required: true
   },
 
   hostel: {
@@ -14,17 +14,49 @@ const BookingSchema = new mongoose.Schema({
   },
   student: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: true
+    ref: 'User'
+  },
+  userEmail: {
+    type: String,
+    trim: true,
+    lowercase: true
+  },
+  email: {
+    type: String,
+    trim: true,
+    lowercase: true,
+    maxlength: 254,
+    match: /^[^\s@]+@[^\s@]+\.[^\s@]+$/
   },
   hostelOwner: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
   },
 
+  contactName: {
+    type: String,
+    required: true,
+    trim: true,
+    maxlength: 120
+  },
+  contactNumber: {
+    type: String,
+    required: true,
+    trim: true,
+    maxlength: 30
+  },
+
   roomType: {
     type: String,
-    required: true
+    trim: true,
+    maxlength: 100,
+    default: 'N/A'
+  },
+  people: {
+    type: Number,
+    required: true,
+    min: 1,
+    max: 50
   },
   roomNumber: String,
   numberOfRooms: {
@@ -33,25 +65,10 @@ const BookingSchema = new mongoose.Schema({
   },
 
   checkInDate: Date,
-  checkOutDate: Date,
-  numberOfNights: Number,
 
   status: {
     type: String,
-    enum: ['pending', 'contacted', 'confirmed', 'cancelled', 'completed', 'no-show'],
-    default: 'pending'
-  },
-
-  pricePerNight: Number,
-  totalPrice: Number,
-  deposit: Number,
-  bookingFee: Number,
-  discount: Number,
-  finalAmount: Number,
-
-  paymentStatus: {
-    type: String,
-    enum: ['pending', 'partial', 'completed'],
+    enum: ['pending', 'contacted', 'confirmed', 'cancelled', 'completed', 'no-show', 'success'],
     default: 'pending'
   },
 
@@ -66,29 +83,20 @@ const BookingSchema = new mongoose.Schema({
   preferredContact: {
     type: String,
     enum: ['call', 'whatsapp', 'email'],
-    default: 'call'
+    default: 'whatsapp'
   },
-
-  messages: [{
-    sender: mongoose.Schema.Types.ObjectId,
-    senderRole: String,
-    message: String,
-    timestamp: { type: Date, default: Date.now },
-    attachments: [String]
-  }],
-
-  ownerResponse: {
-    status: {
-      type: String,
-      enum: ['pending', 'interested', 'rejected'],
-      default: 'pending'
-    },
-    responseMessage: String,
-    respondedAt: Date
+  method: {
+    type: String,
+    enum: ['whatsapp'],
+    default: 'whatsapp'
   },
 
   specialRequests: String,
   additionalInfo: String,
+  frontendDetails: {
+    type: mongoose.Schema.Types.Mixed,
+    default: undefined
+  },
 
   cancellationReason: String,
   cancelledBy: {

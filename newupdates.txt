@@ -198,8 +198,16 @@ models above:
   `roomTypes`, `foodItems`, `facilities`, `images`, `verificationStatus`,
   `isVerified`, `isLive`, `isApproved`, sponsorship fields, rank, and rating
   statistics. Use GeoJSON coordinates as `[longitude, latitude]`.
-- **Booking** (`bookings`): references `Hostel` and `User`; statuses are
-  `pending`, `contacted`, `confirmed`, `cancelled`, `completed`, and `no-show`.
+- **Booking** (`bookings`): references `Hostel` and optionally `User`; the
+  public booking record requires `bookingCode`, `hostel`, `contactName`,
+  `contactNumber`, and `people`. Contact details and `studentDetails` are
+  snapshots; `email` and `userEmail` are optional. `roomType` defaults to
+  `N/A`; status values are `pending`, `contacted`, `confirmed`, `cancelled`,
+  `completed`, `no-show`, and `success`. Contact preferences are `call`,
+  `whatsapp`, or `email`, while `method` currently permits only `whatsapp`.
+  The public schema has no payment-status or booking-price fields. Admins can
+  update a booking status with `PATCH /api/admin/bookings/:id/status` and a
+  JSON body containing `{ "status": "<allowed status>" }`; changes are audited.
 - **Rating** (`ratings`): also contains the review text. It references a
   hostel, student, and optional booking; `overallRating` is 1-5 and publication
   is controlled by `isPublished`.

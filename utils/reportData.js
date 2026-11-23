@@ -5,8 +5,7 @@ const Log = require('../models/Log');
 
 const MAX_REPORT_ROWS = 2000;
 const USER_ROLES = ['student', 'hostelowner', 'agent', 'admin', 'superadmin', 'founder'];
-const BOOKING_STATUSES = ['pending', 'contacted', 'confirmed', 'cancelled', 'completed', 'no-show'];
-const PAYMENT_STATUSES = ['pending', 'partial', 'completed'];
+const BOOKING_STATUSES = ['pending', 'contacted', 'confirmed', 'cancelled', 'completed', 'no-show', 'success'];
 
 const badRequest = (message) => Object.assign(new Error(message), { statusCode: 400 });
 const text = (value) => String(value ?? '').trim();
@@ -171,38 +170,44 @@ const buildBookingReport = async (body, filters, includeRemarks) => {
     if (!BOOKING_STATUSES.includes(status)) throw badRequest('Invalid booking status.');
     query.status = status;
   }
-  const paymentStatus = text(filters.paymentStatus || 'all').toLowerCase();
-  if (!isAll(paymentStatus)) {
-    if (!PAYMENT_STATUSES.includes(paymentStatus)) throw badRequest('Invalid payment status.');
-    query.paymentStatus = paymentStatus;
-  }
-
   const bookings = await Booking.find(query)
     .populate('hostel', 'name location.addressText')
     .populate('student', 'firstName lastName phone')
-    .sort({ checkInDate: -1 })
+    .sort({ checkInDate: -1, createdAt: -1 })
     .limit(MAX_REPORT_ROWS)
     .lean();
   const rows = bookings.map((booking) => ({
-    guestName: booking.studentDetails?.name || '',
-    studentName: fullName(booking.student) || booking.studentDetails?.name || '',
+    bookingCode: booking.bookingCode || '',
+    status: booking.status || '',
+    guestName: booking.contactName || booking.studentDetails?.name || '',
+    studentName: fullName(booking.student) || booking.studentDetails?.name || booking.contactName || '',
+    email: booking.email || booking.userEmail || booking.studentDetails?.email || '',
+    roomType: booking.roomType || 'N/A',
+    people: booking.people ?? '',
     hostelName: booking.hostel?.name || '',
     address: booking.hostel?.location?.addressText || '',
     checkInDate: booking.checkInDate || '',
-    guestContact: booking.studentDetails?.phone || booking.student?.phone || '',
+    guestContact: booking.contactNumber || booking.studentDetails?.phone || booking.student?.phone || '',
+    preferredContact: booking.preferredContact || booking.method || '',
     remarks: booking.specialRequests || booking.additionalInfo || ''
   }));
   const columns = [
+    { key: 'bookingCode', label: 'Booking Code' },
+    { key: 'status', label: 'Status' },
     { key: 'guestName', label: 'Guest Name' },
     { key: 'studentName', label: 'Student Name' },
+    { key: 'email', label: 'Email' },
+    { key: 'guestContact', label: 'Guest Contact' },
     { key: 'hostelName', label: 'Hostel Name' },
     { key: 'address', label: 'Address' },
+    { key: 'roomType', label: 'Room Type' },
+    { key: 'people', label: 'People' },
     { key: 'checkInDate', label: 'Check-in Date' },
-    { key: 'guestContact', label: 'Guest Contact' }
+    { key: 'preferredContact', label: 'Preferred Contact' }
   ];
   appendRemarksColumn(columns, rows, includeRemarks, (index) => rows[index].remarks);
   prependSerialNumberColumn(columns, rows);
-  const filtersSummary = [period !== 'All dates' ? `Period: ${period}` : null, `Status: ${status}`, `Payment: ${paymentStatus}`].filter(Boolean);
+  const filtersSummary = [period !== 'All dates' ? `Period: ${period}` : null, `Status: ${status}`].filter(Boolean);
 
   return { documentName: 'Bookings', columns, rows, summary: filtersSummary.join(' | ') };
 };
