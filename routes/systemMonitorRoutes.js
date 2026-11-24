@@ -82,42 +82,42 @@ const normalizeMetric = (payload, name) => {
       value: toDisplayValue(point.value)
     }))
   };
+};
 
-  const getAdminRuntimeResources = () => {
-    const now = process.hrtime.bigint();
-    const usage = process.cpuUsage();
-    const nowMs = Number(now / 1000000n);
+const getAdminRuntimeResources = () => {
+  const now = process.hrtime.bigint();
+  const usage = process.cpuUsage();
+  const nowMs = Number(now / 1000000n);
 
-    let cpuPercent = 0;
-    if (adminRuntimeCpuSample) {
-      const elapsedMs = nowMs - adminRuntimeCpuSample.nowMs;
-      const cpuMicroseconds = (usage.user - adminRuntimeCpuSample.user)
-        + (usage.system - adminRuntimeCpuSample.system);
-      if (elapsedMs > 0) cpuPercent = (cpuMicroseconds / (elapsedMs * 1000)) * 100;
-    }
-    adminRuntimeCpuSample = { nowMs, user: usage.user, system: usage.system };
+  let cpuPercent = 0;
+  if (adminRuntimeCpuSample) {
+    const elapsedMs = nowMs - adminRuntimeCpuSample.nowMs;
+    const cpuMicroseconds = (usage.user - adminRuntimeCpuSample.user)
+      + (usage.system - adminRuntimeCpuSample.system);
+    if (elapsedMs > 0) cpuPercent = (cpuMicroseconds / (elapsedMs * 1000)) * 100;
+  }
+  adminRuntimeCpuSample = { nowMs, user: usage.user, system: usage.system };
 
-    const timestamp = new Date().toISOString();
-    return {
-      cpu: {
-        available: true,
-        data: {
-          value: Number(Math.max(0, cpuPercent).toFixed(2)),
-          unit: '%',
-          timestamp,
-          source: 'admin-node-process'
-        }
-      },
-      memory: {
-        available: true,
-        data: {
-          value: mb(process.memoryUsage().rss),
-          unit: 'MB',
-          timestamp,
-          source: 'admin-node-process'
-        }
+  const timestamp = new Date().toISOString();
+  return {
+    cpu: {
+      available: true,
+      data: {
+        value: Number(Math.max(0, cpuPercent).toFixed(2)),
+        unit: '%',
+        timestamp,
+        source: 'admin-node-process'
       }
-    };
+    },
+    memory: {
+      available: true,
+      data: {
+        value: mb(process.memoryUsage().rss),
+        unit: 'MB',
+        timestamp,
+        source: 'admin-node-process'
+      }
+    }
   };
 };
 
