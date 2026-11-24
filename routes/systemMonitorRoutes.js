@@ -13,7 +13,8 @@ const MONGODB_LIMIT_MB = 512;
 const EGRESS_LIMIT_GB = 5;
 const STORAGE_IMAGE_PREFIX = 'stayinhostel/hostels';
 const OWNER_CACHE_TTL_MS = 60 * 60 * 1000;
-const RENDER_METRICS_CACHE_TTL_MS = 60 * 1000;
+const RENDER_METRICS_CACHE_TTL_MS = 20 * 1000;
+const SYSTEM_USAGE_STREAM_INTERVAL_MS = 30 * 1000;
 const LOG_TIMEFRAMES = { '30m': 30 * 60, '1h': 60 * 60, '24h': 24 * 60 * 60 };
 const ownerCache = new Map();
 const renderServiceCache = new Map();
@@ -403,7 +404,7 @@ router.get('/system-usage/stream', ...adminOnly, async (req, res) => {
     sendUsage().catch((error) => {
       logger.error('System usage stream interval failed', getSafeError(error));
     });
-  }, RENDER_METRICS_CACHE_TTL_MS);
+  }, SYSTEM_USAGE_STREAM_INTERVAL_MS);
   req.on('aborted', disconnect);
   res.on('close', disconnect);
   sendUsage().catch((error) => {
