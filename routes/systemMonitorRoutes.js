@@ -15,6 +15,7 @@ const STORAGE_IMAGE_PREFIX = 'stayinhostel/hostels';
 const OWNER_CACHE_TTL_MS = 60 * 60 * 1000;
 const RENDER_METRICS_CACHE_TTL_MS = 20 * 1000;
 const SYSTEM_USAGE_STREAM_INTERVAL_MS = 30 * 1000;
+let adminRuntimeCpuSample = null;
 const LOG_TIMEFRAMES = { '30m': 30 * 60, '1h': 60 * 60, '24h': 24 * 60 * 60 };
 const ownerCache = new Map();
 const renderServiceCache = new Map();
@@ -81,6 +82,43 @@ const normalizeMetric = (payload, name) => {
       value: toDisplayValue(point.value)
     }))
   };
+
+  const getAdminRuntimeResources = () => {
+    const now = process.hrtime.bigint();
+    const usage = process.cpuUsage();
+    const nowMs = Number(now / 1000000n);
+
+    let cpuPercent = 0;
+    if (adminRuntimeCpuSample) {
+      const elapsedMs = nowMs - adminRuntimeCpuSample.nowMs;
+      const cpuMicroseconds = (usage.user - adminRuntimeCpuSample.user)
+        + (usage.system - adminRuntimeCpuSample.system);
+      if (elapsedMs > 0) cpuPercent = (cpuMicroseconds / (elapsedMs * 1000)) * 100;
+    }
+    adminRuntimeCpuSample = { nowMs, user: usage.user, system: usage.system };
+
+    const timestamp = new Date().toISOString();
+    return {
+      cpu: {
+        available: true,
+        data: {
+          value: Number(Math.max(0, cpuPercent).toFixed(2)),
+          unit: '%',
+          timestamp,
+          source: 'admin-node-process'
+        }
+      },
+      memory: {
+        available: true,
+        data: {
+          value: mb(process.memoryUsage().rss),
+          unit: 'MB',
+          timestamp,
+          source: 'admin-node-process'
+        }
+      }
+    };
+  };
 };
 
 const getMetric = async (apiKey, serviceId, name, target, cachedMetric) => {
@@ -146,6 +184,49 @@ const getMetric = async (apiKey, serviceId, name, target, cachedMetric) => {
 };
 
 const fetchRenderService = async (target, apiKey, serviceId, cachedValue) => {
+  let publicRuntimeResources = null;
+  if (target === 'public' && process.env.PUBLIC_BACKEND_URL) {
+    try {
+      const runtimeResponse = await axios.get(
+        `${process.env.PUBLIC_BACKEND_URL.replace(/\/$/, '')}/api/system/runtime-metrics`,
+        {
+          timeout: 5000,
+          headers: process.env.PUBLIC_BACKEND_METRICS_TOKEN
+            ? { 'x-runtime-metrics-token': process.env.PUBLIC_BACKEND_METRICS_TOKEN }
+            : {}
+        }
+      );
+      const runtime = runtimeResponse.data;
+      if (runtime?.success) {
+        const timestamp = runtime.timestamp || new Date().toISOString();
+        publicRuntimeResources = {
+          cpu: {
+            available: true,
+            data: {
+              value: Number(runtime.cpuPercent || 0),
+              unit: '%',
+              timestamp,
+              source: 'public-node-process'
+            }
+          },
+          memory: {
+            available: true,
+            data: {
+              value: Number(runtime.memoryMb || 0),
+              unit: 'MB',
+              timestamp,
+              source: 'public-node-process'
+            }
+          }
+        };
+      }
+    } catch (error) {
+      if (process.env.NODE_ENV !== 'production') {
+        logger.warn('Public runtime metrics request failed', getSafeError(error));
+      }
+    }
+  }
+
   const deployAndMetrics = await Promise.allSettled([
     renderGet(apiKey, `/services/${encodeURIComponent(serviceId)}`),
     renderGet(apiKey, `/services/${encodeURIComponent(serviceId)}/deploys`, { limit: 1 }),
@@ -187,7 +268,7 @@ const fetchRenderService = async (target, apiKey, serviceId, cachedValue) => {
     error: deploymentResult.status === 'rejected' ? 'Deployment temporarily unavailable' : null
   };
   const metricResults = metricsResult.status === 'fulfilled' ? metricsResult.value : [];
-  const resources = metricsResult.status === 'fulfilled'
+  let resources = metricsResult.status === 'fulfilled'
     ? {
       cpu: metricResults[0].value,
       memory: metricResults[1].value,
@@ -198,6 +279,22 @@ const fetchRenderService = async (target, apiKey, serviceId, cachedValue) => {
       memory: { available: false, message: 'Metrics temporarily unavailable' },
       bandwidth: { available: false, message: 'Metrics temporarily unavailable' }
     };
+
+  if (target === 'admin') {
+    const runtime = getAdminRuntimeResources();
+    resources = {
+      ...resources,
+      cpu: runtime.cpu,
+      memory: runtime.memory
+    };
+  }
+  if (target === 'public' && publicRuntimeResources) {
+    resources = {
+      ...resources,
+      cpu: publicRuntimeResources.cpu,
+      memory: publicRuntimeResources.memory
+    };
+  }
 
   const value = {
     available: Boolean(service),
@@ -215,17 +312,17 @@ const fetchRenderService = async (target, apiKey, serviceId, cachedValue) => {
   return value;
 };
 
-const getRenderService = async (target) => {
+const getRenderService = async (target, forceRefresh = false) => {
   const { apiKey, serviceId } = renderCredentials(target);
   if (!apiKey || !serviceId) {
     return { available: false, error: 'Render credentials are not configured for this service' };
   }
 
   const cached = renderServiceCache.get(serviceId);
-  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  if (!forceRefresh && cached && cached.expiresAt > Date.now()) return cached.value;
 
   const pendingRequest = renderServiceRequests.get(serviceId);
-  if (pendingRequest) return pendingRequest;
+  if (!forceRefresh && pendingRequest) return pendingRequest;
 
   const request = fetchRenderService(target, apiKey, serviceId, cached?.value);
   renderServiceRequests.set(serviceId, request);
@@ -284,11 +381,11 @@ const getDailyRequests = async () => {
   };
 };
 
-const buildSystemUsage = async () => {
+const buildSystemUsage = async (forceRefresh = false) => {
   const results = await Promise.allSettled([
     getSupabaseStorage(),
-    getRenderService('public'),
-    getRenderService('admin'),
+    getRenderService('public', forceRefresh),
+    getRenderService('admin', forceRefresh),
     getMongoStorage(),
     getDailyRequests()
   ]);
@@ -313,7 +410,8 @@ const buildSystemUsage = async () => {
 router.get('/system-usage', ...adminOnly, async (req, res) => {
   try {
     res.set('Cache-Control', 'no-store');
-    res.json({ success: true, usage: await buildSystemUsage() });
+    const forceRefresh = req.query.refresh === '1' || req.query.refresh === 'true';
+    res.json({ success: true, usage: await buildSystemUsage(forceRefresh) });
   } catch (error) {
     logger.error('System usage endpoint failed', getSafeError(error));
     res.status(500).json({ success: false, message: 'Unable to load system usage' });
